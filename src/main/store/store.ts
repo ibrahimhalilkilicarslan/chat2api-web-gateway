@@ -1166,7 +1166,7 @@ export class StoreManager {
   ): Record<string, string | number | boolean> {
     const allowed: Record<string, string | number | boolean> = {}
     for (const [key, value] of Object.entries(metadata)) {
-      if (!/^(requestId|providerId|accountId|apiKeyId|enabled|count|status|model)$/.test(key)) continue
+      if (!/^(requestId|providerId|accountId|apiKeyId|enabled|count|status|model|healthCode)$/.test(key)) continue
       allowed[key] = typeof value === 'string' ? redactText(value).slice(0, 200) : value
     }
     return allowed

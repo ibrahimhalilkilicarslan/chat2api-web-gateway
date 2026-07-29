@@ -221,7 +221,17 @@ describe('gateway HTTP security contract', () => {
       code: 'provider_healthy',
     })
     expect(serialized).not.toContain('official-provider-key-that-must-remain-private')
-    expect(JSON.stringify(storeManager.listAuditLogs(20)))
-      .not.toContain('official-provider-key-that-must-remain-private')
+    const auditLogs = storeManager.listAuditLogs(20)
+    expect(auditLogs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: 'account.health_check',
+        outcome: 'success',
+        metadata: {
+          providerId: 'deepseek-api',
+          healthCode: 'provider_healthy',
+        },
+      }),
+    ]))
+    expect(JSON.stringify(auditLogs)).not.toContain('official-provider-key-that-must-remain-private')
   })
 })
