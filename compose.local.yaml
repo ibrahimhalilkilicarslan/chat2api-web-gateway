@@ -1,0 +1,4 @@
+services:
+  gateway:
+    ports:
+      - "127.0.0.1:${CHAT2API_BIND_PORT:-8080}:8080"

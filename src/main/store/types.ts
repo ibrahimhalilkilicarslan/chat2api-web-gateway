@@ -3,9 +3,10 @@
  * Defines core data structures for accounts, providers, and configuration
  */
 
-import type { ProviderStatus } from '../../shared/types'
 import type { LegacyToolPromptConfig, ToolCallingConfig } from '../../shared/toolCalling.ts'
 import { DEFAULT_TOOL_CALLING_CONFIG } from '../../shared/toolCalling.ts'
+
+export type ProviderStatus = 'online' | 'offline' | 'degraded' | 'unknown'
 
 /**
  * Account Status Enum
@@ -806,9 +807,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   logRetentionDays: 7,
   requestLogConfig: DEFAULT_REQUEST_LOG_CONFIG,
   requestTimeout: 60000,
-  retryCount: 3,
+  retryCount: 0,
   apiKeys: [],
-  enableApiKey: false,
+  enableApiKey: true,
   oauthProxyMode: 'system',
   sessionConfig: DEFAULT_SESSION_CONFIG,
   toolCallingConfig: DEFAULT_TOOL_CALLING_CONFIG,

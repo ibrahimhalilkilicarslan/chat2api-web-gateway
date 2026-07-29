@@ -1,0 +1,57 @@
+name: chat2api-web-gateway
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chat2api-web-gateway:local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      CHAT2API_HOST: 0.0.0.0
+      PORT: 8080
+      CHAT2API_DATABASE_PATH: /data/chat2api.sqlite
+      CHAT2API_LOG_LEVEL: ${CHAT2API_LOG_LEVEL:-info}
+      CHAT2API_TRUST_PROXY: ${CHAT2API_TRUST_PROXY:-1}
+      CHAT2API_SECURE_COOKIES: ${CHAT2API_SECURE_COOKIES:-true}
+      CHAT2API_MASTER_KEY: ${CHAT2API_MASTER_KEY}
+      CHAT2API_BOOTSTRAP_API_KEY: ${CHAT2API_BOOTSTRAP_API_KEY}
+      CHAT2API_ADMIN_TOKEN: ${CHAT2API_ADMIN_TOKEN}
+      CHAT2API_SESSION_SECRET: ${CHAT2API_SESSION_SECRET}
+      CHAT2API_ADMIN_ORIGINS: ${CHAT2API_ADMIN_ORIGINS}
+      CHAT2API_MAX_BODY_BYTES: ${CHAT2API_MAX_BODY_BYTES:-2097152}
+      CHAT2API_GLOBAL_CONCURRENCY: ${CHAT2API_GLOBAL_CONCURRENCY:-20}
+      CHAT2API_ACCOUNT_CONCURRENCY: ${CHAT2API_ACCOUNT_CONCURRENCY:-2}
+      CHAT2API_RATE_LIMIT_RPM: ${CHAT2API_RATE_LIMIT_RPM:-60}
+      CHAT2API_DAILY_QUOTA: ${CHAT2API_DAILY_QUOTA:-1000}
+      CHAT2API_REQUEST_TIMEOUT_MS: ${CHAT2API_REQUEST_TIMEOUT_MS:-120000}
+      CHAT2API_FIRST_BYTE_TIMEOUT_MS: ${CHAT2API_FIRST_BYTE_TIMEOUT_MS:-30000}
+    expose:
+      - "8080"
+    volumes:
+      - chat2api_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  chat2api_data:

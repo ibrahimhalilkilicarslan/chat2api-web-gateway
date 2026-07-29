@@ -1,272 +1,102 @@
-# Chat2API
+# Chat2API Web Gateway
 
-<p align="center">
-  <img src="build/icons.png" alt="Chat2API Logo" width="128" height="128">
-</p>
+Security-hardened, web-only derivative of
+[xiaoY233/Chat2API](https://github.com/xiaoY233/Chat2API). It exposes a limited
+OpenAI-compatible API and a responsive administration console without Electron,
+Koa, Xvfb, noVNC, or a browser automation surface.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.3.0-blue?style=flat-square&logo=github" alt="Release">
-  <img src="https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square" alt="License">
-  <br>
-  <a href="https://www.electronjs.org/"><img src="https://img.shields.io/badge/Electron-33+-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron"></a>
-  <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React"></a>
-  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript"></a>
-  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform">
-</p>
+## Security model
 
-<p align="center">
-  <strong><a href="README_CN.md">中文</a> | <a href="https://chat2api-doc.vercel.app/">Official Website</a> | <a href="https://chat2api-doc.vercel.app/docs">Documentation</a></strong>
-</p>
+- API access is fail-closed and accepts credentials only as `Authorization: Bearer`.
+- Provider credentials are encrypted at rest with AES-256-GCM.
+- API keys are stored as SHA-256 hashes and displayed only once at creation.
+- Admin sessions use signed, HttpOnly cookies, exact-origin checks, and CSRF tokens.
+- Prompt and response bodies are never persisted.
+- Custom provider URLs are disabled; built-in endpoints are fixed in source.
+- Remote media URLs are rejected; supported images must be bounded base64 data URLs.
+- Global/per-account concurrency, per-key RPM, daily quotas, and circuit breakers are enforced.
+- Production builds remove legacy provider console diagnostics.
+- The container runs as UID/GID `10001`, with a read-only root filesystem and no Linux capabilities.
 
-<p align="center">
-  <strong>Multi-platform AI Service Unified Management Tool</strong>
-</p>
+Provider adapters automate undocumented web-session endpoints. This can violate a
+provider's terms, trigger account controls, or stop working without notice. Use
+dedicated accounts, obtain provider approval where required, and prefer official
+APIs for production-critical workloads.
 
-<p align="center">
-  Chat2API enables zero-cost access to leading AI models by leveraging official web UIs. It supports providers such as DeepSeek, GLM, Kimi, MiniMax, Qwen, and Z.ai, and seamlessly integrates with tools like openlcaw, Cline, and Roo-Code — making any OpenAI-compatible client work out of the box.
-</p>
+## API surface
 
-![Product Preview](docs/screenshots/preview.png)
+| Route | Purpose |
+| --- | --- |
+| `GET /health`, `/health/live`, `/health/ready` | Minimal health endpoints |
+| `GET /v1/models` | Models available through active accounts |
+| `POST /v1/chat/completions` | OpenAI-compatible chat, including SSE |
+| `POST /v1/completions` | Non-streaming legacy completion adapter |
+| `POST /v1/responses` | Non-streaming Responses API subset |
+| `/admin/` | Web administration console |
 
-## ✨ Features
+## Local development
 
-- OpenAI Compatible API: Provides standard OpenAI-compatible API endpoints for seamless integration
-- Multi-Provider Support: Connect DeepSeek, GLM, Kimi, MiniMax, Perplexity 🆕, Qwen, Z.ai and more
-- 🆕 Context Management: Intelligent conversation context management with sliding window, token limit, and summary strategies
-- 🆕 Function Calling Support: Universal tool calling capability for all models via prompt engineering, compatible with Cherry Studio, Kilo Code, and other clients
-- 🆕 Model Mapping: Flexible model name mapping with wildcard support and preferred provider/account selection
-- 🆕 Custom Parameters: Support for custom HTTP headers to enable web search, thinking mode, and deep research features
-- Dashboard Monitoring: Real-time request traffic, token usage, and success rates
-- API Key Management: Generate and manage keys for your local proxy
-- Model Management: View and manage available models from all providers
-- Request Logs: Detailed request logging for debugging and analysis
-- Proxy Configuration: Flexible proxy settings and routing strategies
-- System Tray Integration: Quick access to status from menu bar
-- Multilingual: English and Simplified Chinese support
-- Modern UI: Clean, responsive interface with dark/light theme support
-
-## 🤖 Supported Providers
-
-| Provider         | Auth Type     | OAuth | Models                                                                                                                                                                                                                                          |
-| ---------------- | ------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| DeepSeek         | User Token    | Yes   | deepseek-v4-flash, deepseek-v4-pro                                                                                                                                                                                                              |
-| GLM              | Refresh Token | Yes   | GLM-5.1                                                                                                                                                                                                                                         |
-| Kimi             | JWT Token     | Yes   | Kimi-K2.6                                                                                                                                                                                                                                       |
-| MiniMax          | JWT Token     | Yes   | MiniMax-M2.7                                                                                                                                                                                                                                    |
-| Mimo             | Cookie        | Yes   | MiMo-V2.5-Pro, MiMo-V2.5, MiMo-V2-Flash                                                                                                                                                                                                         |
-| Perplexity       | Cookie        | Yes   | Auto                                                                                                                                                                                                                                           |
-| Qwen (CN)        | SSO Ticket    | Yes   | Qwen3.6, Qwen3.7-Max, Qwen3.5-Flash, Qwen3-Max, Qwen3-Max-Thinking-Preview, Qwen3-Coder                                                                                                                                                         |
-| Qwen AI (Global) | JWT Token     | Yes   | Qwen3.7-Max, Qwen3.6-Plus, Qwen3.6-35B-A3B, Qwen3.6-27B, Qwen3-Coder                                                                                                                                                                           |
-| Z.ai             | JWT Token     | Yes   | Temporarily unavailable due to frontend captcha risk control                                                                                                                                                                                    |
-
-Provider adaptation notes and manual model-addition guides are in [docs/providers](docs/providers/README.md).
-
-## 📥 Installation
-
-### Download
-
-Download the latest release from [GitHub Releases](https://github.com/xiaoY233/Chat2API/releases):
-
-| Platform              | Download                                |
-| --------------------- | --------------------------------------- |
-| macOS (Apple Silicon) | `Chat2API-x.x.x-arm64.dmg`              |
-| macOS (Intel)         | `Chat2API-x.x.x-x64.dmg`                |
-| Windows               | `Chat2API-x.x.x-x64-setup.exe`          |
-| Linux                 | `Chat2API-x.x.x-x64.AppImage` or `.deb` |
-
-### Build from Source
-
-**Requirements:**
-
-- Node.js 18+
-- npm
-- Git
+Requirements: Node.js `22.22.2+`, Corepack, and pnpm `11.17.0`.
 
 ```bash
-# Clone the repository
-git clone https://github.com/xiaoY233/Chat2API.git
-cd Chat2API
-
-# Install dependencies
-npm install
-
-# Start development server
-npx electron-vite dev 2>&1
+corepack enable
+corepack prepare pnpm@11.17.0 --activate
+pnpm install --frozen-lockfile
+cp .env.example .env
+pnpm dev
 ```
 
-### Build for Production
+Generate every secret independently:
 
 ```bash
-npm run build              # Build the application
-npm run build:mac          # Build for macOS (dmg, zip)
-npm run build:win          # Build for Windows (nsis)
-npm run build:linux        # Build for Linux (AppImage, deb)
-npm run build:all          # Build for all platforms
+openssl rand -base64 32  # CHAT2API_MASTER_KEY
+openssl rand -base64 48  # API key, admin token, session secret
 ```
 
-## 📖 Usage
+Never rotate `CHAT2API_MASTER_KEY` without decrypting and re-encrypting existing
+provider credentials. Losing it makes stored credentials unrecoverable.
 
-### Step 1: Launch the App
+`CHAT2API_BOOTSTRAP_API_KEY` is environment-managed. Replacing it and restarting
+atomically revokes the previous bootstrap key without changing admin-created keys.
 
-After installation, launch Chat2API. You'll see the main dashboard.
-
-### Step 2: Add a Provider
-
-1. Navigate to **Providers** from the sidebar
-2. Click **Add Provider** button
-3. Select a built-in provider (e.g., DeepSeek)
-4. Enter your authentication credentials
-
-For example, to get a DeepSeek token:
-
-1. Visit [DeepSeek Chat](https://chat.deepseek.com/)
-2. Start any conversation
-3. Press `F12` to open Developer Tools
-4. Go to **Application** > **Local Storage**
-5. Find `userToken` and copy its value
-
-### Step 3: Configure Proxy
-
-1. Navigate to **Proxy Settings** from the sidebar
-2. Set the port (default: 8080)
-3. Choose a load balancing strategy:
-   - **Round Robin**: Distributes requests evenly across accounts
-   - **Fill First**: Uses one account until limit is reached
-   - **Failover**: Automatically switches on failure
-4. Click **Start Proxy**
-
-### Step 4: Test the API
-
-Using Python (OpenAI SDK):
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    api_key="your-api-key",
-    base_url="http://localhost:8080/v1"
-)
-
-response = client.chat.completions.create(
-    model="deepseek-v4-flash",
-    messages=[
-        {"role": "user", "content": "Hello, who are you?"}
-    ]
-)
-
-print(response.choices[0].message.content)
-```
-
-### Step 5: Manage API Keys (Optional)
-
-For security, you can enable API Key authentication:
-
-1. Go to **API Keys** page
-2. Click **New API Key**
-3. Enter a name and description
-4. Copy the generated key
-
-## 📸 Screenshots
-
-| Dashboard | Providers |
-|-----------|-----------|
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Providers](docs/screenshots/providers.png) |
-
-| Proxy Settings | API Keys |
-|----------------|----------|
-| ![Proxy](docs/screenshots/proxy.png) | ![API Keys](docs/screenshots/api-keys.png) |
-
-| Models | Session |
-|--------|---------|
-| ![Models](docs/screenshots/models.png) | ![Session](docs/screenshots/Session.png) |
-
-## ⚙️ Settings
-
-- **Port**: Change the proxy listening port (default: 8080)
-- **Routing Strategy**: Round Robin or Fill First
-- **Auto-start**: Launch proxy automatically on app startup
-- **Theme**: Light, Dark, or System preference
-- **Language**: English or Simplified Chinese
-
-## 🏗️ Architecture
-
-```
-Chat2API/
-├── src/
-│   ├── main/                    # Electron main process
-│   │   ├── index.ts            # App entry point
-│   │   ├── tray.ts             # System tray integration
-│   │   ├── proxy/              # Proxy server management
-│   │   ├── ipc/                # IPC handlers
-│   │   └── utils/              # Utilities
-│   ├── preload/                # Context bridge
-│   └── renderer/               # React frontend
-│       ├── components/         # UI components
-│       ├── pages/              # Page components
-│       ├── stores/             # Zustand state
-│       └── hooks/              # Custom hooks
-├── build/                      # Build resources
-└── scripts/                    # Build scripts
-```
-
-## 🔧 Tech Stack
-
-| Component | Technology            |
-| --------- | --------------------- |
-| Framework | Electron 33+          |
-| Frontend  | React 18 + TypeScript |
-| Styling   | Tailwind CSS          |
-| State     | Zustand               |
-| Build     | Vite + electron-vite  |
-| Packaging | electron-builder      |
-| Server    | Koa                   |
-
-## 📁 Data Storage
-
-Application data is stored in `~/.chat2api/` directory:
-
-- `config.json` - Application configuration
-- `providers.json` - Provider settings
-- `accounts.json` - Account credentials (encrypted)
-- `logs/` - Request logs
-
-## ❓ FAQ
-
-### macOS: "App is damaged and can't be opened"
-
-Due to macOS security mechanisms, apps downloaded outside the App Store may trigger this warning. Run the following command to fix it:
+## Verification
 
 ```bash
-sudo xattr -rd com.apple.quarantine "/Applications/Chat2API.app"
+pnpm check
+docker compose -f compose.yaml -f compose.local.yaml config
+docker build --tag chat2api-web-gateway:local .
+pnpm smoke:container
 ```
 
-### How to update?
+`pnpm check` runs lint, strict type checking, unit/integration tests, production
+build, static security guards, and a production dependency audit. The container
+smoke test generates disposable secrets and validates API/admin authentication,
+CSRF, remote-media rejection, hashed key storage, metadata-only request logs,
+non-root execution, read-only filesystems, dropped capabilities, and bounded
+proxy trust. It never calls a provider.
 
-Check for updates in the **About** page, or download the latest version from [GitHub Releases](https://github.com/xiaoY233/Chat2API/releases).
+## Docker
 
-## 🤝 Contributing
+The base compose file exposes port `8080` only to the container network. The local
+override binds it to loopback:
 
-1. Fork the project
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+```bash
+docker compose -f compose.yaml -f compose.local.yaml up --build
+```
 
-## 📄 License
+For Coolify, use `compose.yaml`, attach a persistent volume to `/data`, inject all
+required environment variables through Coolify secrets, and route the domain to
+port `8080`. Do not mount the Docker socket or an application source directory.
 
-GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
+See:
 
-This means:
+- [Architecture](docs/architecture.md)
+- [Security](docs/security.md)
+- [Deployment](docs/deployment.md)
+- [Operations](docs/operations.md)
+- [Provider notes](docs/providers/README.md)
 
-- ✅ Free to use, modify, and distribute
-- ✅ Derivative works must be open-sourced under the same license
-- ✅ Must preserve original copyright notices
+## License and attribution
 
-## 🙏 Acknowledgments
-
-- [Electron](https://www.electronjs.org/) - Cross-platform framework
-- [React](https://react.dev/) - UI framework
-- [TypeScript](https://www.typescriptlang.org/) - Type-safe JavaScript
-- [Tailwind CSS](https://tailwindcss.com/) - CSS framework
-- [Zustand](https://zustand-demo.pmnd.rs/) - State management
-- [Koa](https://koajs.com/) - HTTP server
+Licensed under GPL-3.0. Preserve upstream copyright and license notices when
+distributing this derivative.

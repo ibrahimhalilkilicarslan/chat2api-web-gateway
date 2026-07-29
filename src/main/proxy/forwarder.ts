@@ -1209,7 +1209,7 @@ export class RequestForwarder {
 
   /**
    * Perplexity Dedicated Forward
-   * Uses Electron's net API to bypass Cloudflare protection
+   * Uses the provider adapter's streaming HTTP implementation.
    */
   private async forwardPerplexity(
     request: ChatCompletionRequest,

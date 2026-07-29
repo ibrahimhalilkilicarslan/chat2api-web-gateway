@@ -1,0 +1,29 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "rootDir": ".",
+    "noEmit": true,
+    "noUncheckedIndexedAccess": false,
+    "useUnknownInCatchVariables": false
+  },
+  "include": [
+    "src/core/**/*.ts",
+    "src/legacy/**/*.d.ts",
+    "src/server/**/*.ts",
+    "src/main/providers/builtin/**/*.ts",
+    "src/main/proxy/types.ts",
+    "src/main/store/store.ts",
+    "src/main/store/types.ts",
+    "src/shared/toolCalling.ts",
+    "src/types/**/*.d.ts",
+    "tsup.config.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": ["src/**/*.test.ts"]
+}

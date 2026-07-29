@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { app } from 'electron'
+import { fileURLToPath } from 'url'
 
 export class DeepSeekHash {
   private wasmInstance: any
@@ -120,18 +120,22 @@ let deepSeekHashInstance: DeepSeekHash | null = null
 export async function getDeepSeekHash(): Promise<DeepSeekHash> {
   if (!deepSeekHashInstance) {
     deepSeekHashInstance = new DeepSeekHash()
-    // Use different paths for development and production environments
-    const wasmPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'sha3_wasm_bg.7b9ca65ddd.wasm')
-      : path.join(app.getAppPath(), 'sha3_wasm_bg.7b9ca65ddd.wasm')
-    console.log('[DeepSeekHash] WASM path:', wasmPath)
-    console.log('[DeepSeekHash] File exists:', fs.existsSync(wasmPath))
+    const configuredPath = process.env.CHAT2API_WASM_PATH
+    const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
+    const candidates = [
+      configuredPath,
+      path.resolve(process.cwd(), 'sha3_wasm_bg.7b9ca65ddd.wasm'),
+      path.resolve(process.cwd(), 'dist/sha3_wasm_bg.7b9ca65ddd.wasm'),
+      path.resolve(moduleDirectory, '../sha3_wasm_bg.7b9ca65ddd.wasm'),
+    ].filter((candidate): candidate is string => Boolean(candidate))
+    const wasmPath = candidates.find(candidate => fs.existsSync(candidate))
+    if (!wasmPath) {
+      throw new Error('DeepSeek challenge runtime asset is unavailable')
+    }
     try {
       await deepSeekHashInstance.init(wasmPath)
-      console.log('[DeepSeekHash] WASM initialized successfully')
     } catch (error) {
-      console.error('[DeepSeekHash] WASM initialization failed:', error)
-      throw error
+      throw new Error('DeepSeek challenge runtime initialization failed', { cause: error })
     }
   }
   return deepSeekHashInstance

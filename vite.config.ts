@@ -1,12 +1,19 @@
-import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { resolve } from 'path'
+import { defineConfig } from 'vite'
 
 export default defineConfig({
+  root: 'src/web',
   plugins: [react()],
-  resolve: {
-    alias: {
-      '@': resolve(__dirname, './src/renderer/src')
-    }
-  }
+  build: {
+    outDir: '../../dist/web',
+    emptyOutDir: true,
+    sourcemap: false,
+  },
+  server: {
+    port: 5173,
+    proxy: {
+      '/admin/api': 'http://127.0.0.1:8080',
+      '/health': 'http://127.0.0.1:8080',
+    },
+  },
 })
