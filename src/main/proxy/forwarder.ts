@@ -11,7 +11,7 @@ import { ForwardResult, ChatCompletionRequest, ProxyContext } from './types'
 import { proxyStatusManager } from './status'
 import { storeManager } from '../store/store'
 import { DeepSeekAdapter } from './adapters/deepseek'
-import { DeepSeekStreamHandler } from './adapters/deepseek-stream'
+import { DeepSeekProviderError, DeepSeekStreamHandler } from './adapters/deepseek-stream'
 import { GLMAdapter, GLMStreamHandler } from './adapters/glm'
 import { KimiAdapter, KimiStreamHandler } from './adapters/kimi'
 import { MimoAdapter, MimoStreamHandler } from './adapters/mimo'
@@ -502,6 +502,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
+        status: error instanceof DeepSeekProviderError ? error.status : undefined,
         error: error instanceof Error ? error.message : 'Unknown error',
         latency,
       }

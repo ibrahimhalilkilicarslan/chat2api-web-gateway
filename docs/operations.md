@@ -17,6 +17,11 @@ perform the following operational checks:
 9. A dedicated provider test account completes non-stream and stream requests.
 10. Request activity contains metadata only, never prompts or responses.
 
+DeepSeek may report throttling as an SSE error inside an HTTP `200` provider
+response. The gateway converts that condition to HTTP `429` for non-stream
+requests and emits a `provider_rate_limited` SSE error event for streaming
+requests. An empty successful completion must not be treated as provider health.
+
 ## Backup
 
 Use the hosting platform's consistent volume snapshot while the container is

@@ -20,6 +20,38 @@ interface StreamChunk {
   v?: any
   response_message_id?: string
   o?: string
+  type?: string
+  content?: string
+  finish_reason?: string
+}
+
+export class DeepSeekProviderError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'DeepSeekProviderError'
+  }
+}
+
+function providerErrorFromChunk(chunk: StreamChunk): DeepSeekProviderError | undefined {
+  if (chunk.type !== 'error') return undefined
+
+  if (chunk.finish_reason === 'rate_limit_reached') {
+    return new DeepSeekProviderError(
+      'provider_rate_limited',
+      429,
+      'DeepSeek rate limit reached. Retry later.',
+    )
+  }
+
+  return new DeepSeekProviderError(
+    'provider_response_error',
+    502,
+    'DeepSeek could not complete the request.',
+  )
 }
 
 function createBaseChunk(id: string, model: string, created: number) {
@@ -213,6 +245,12 @@ export class DeepSeekStreamHandler {
 
         const parsed = this.parseSSE(data)
         if (!parsed) continue
+
+        const providerError = providerErrorFromChunk(parsed)
+        if (providerError) {
+          this.handleProviderError(transStream, providerError)
+          return
+        }
 
         this.processChunk(parsed, transStream, isThinkingModel, isSilentModel, isFoldModel, isSearchSilentModel)
       }
@@ -450,6 +488,26 @@ export class DeepSeekStreamHandler {
     this.onEnd?.()
   }
 
+  private handleProviderError(
+    transStream: PassThrough,
+    error: DeepSeekProviderError,
+  ): void {
+    if (this.isDone) return
+    this.isDone = true
+
+    transStream.write(`data: ${JSON.stringify({
+      error: {
+        message: error.message,
+        type: 'provider_error',
+        param: null,
+        code: error.code,
+      },
+    })}\n\n`)
+    transStream.write('data: [DONE]\n\n')
+    transStream.end()
+    this.onEnd?.()
+  }
+
   async handleNonStream(stream: NodeJS.ReadableStream): Promise<any> {
     let accumulatedContent = ''
     let accumulatedThinkingContent = ''
@@ -464,8 +522,11 @@ export class DeepSeekStreamHandler {
 
     return new Promise((resolve, reject) => {
       let buffer = ''
+      let providerFailed = false
 
       stream.on('data', (chunk: Buffer) => {
+        if (providerFailed) return
+
         buffer += chunk.toString()
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
@@ -478,6 +539,13 @@ export class DeepSeekStreamHandler {
 
           try {
             const parsed = JSON.parse(data)
+
+            const providerError = providerErrorFromChunk(parsed)
+            if (providerError) {
+              providerFailed = true
+              reject(providerError)
+              return
+            }
             
             if (parsed.response_message_id && !messageId) {
               messageId = parsed.response_message_id
@@ -588,6 +656,8 @@ export class DeepSeekStreamHandler {
       })
 
       stream.on('end', () => {
+        if (providerFailed) return
+
         // Parse tool calls from accumulated content
         const { content: cleanContent, toolCalls } = this.toolCallingPlan?.shouldParseResponse
           ? { content: accumulatedContent, toolCalls: [] }
