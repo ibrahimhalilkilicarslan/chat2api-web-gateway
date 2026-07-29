@@ -17,14 +17,18 @@ if (baseUrl.protocol !== 'https:' && !(baseUrl.protocol === 'http:' && isLoopbac
 if (baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) {
   throw new Error('CHAT2API_BASE_URL must not contain credentials, query parameters, or fragments')
 }
-baseUrl.pathname = baseUrl.pathname.replace(/\/+$/, '')
+const configuredPath = baseUrl.pathname.replace(/\/+$/, '')
+const usesExplicitApiPath = configuredPath.endsWith('/v1')
+const servicePath = usesExplicitApiPath ? configuredPath.slice(0, -3) : configuredPath
+const apiPath = usesExplicitApiPath ? configuredPath : `${configuredPath}/v1`
 
-function endpoint(path) {
-  return new URL(`${baseUrl.pathname}${path}`, baseUrl).toString()
+function endpoint(path, scope = 'service') {
+  const prefix = scope === 'api' ? apiPath : servicePath
+  return new URL(`${prefix}${path}`, baseUrl).toString()
 }
 
-async function request(path, init = {}, timeoutMs = 90_000) {
-  return fetch(endpoint(path), {
+async function request(path, init = {}, timeoutMs = 90_000, scope = 'service') {
+  return fetch(endpoint(path, scope), {
     ...init,
     signal: globalThis.AbortSignal.timeout(timeoutMs),
   })
@@ -40,12 +44,17 @@ function authorizedHeaders(extra = {}) {
 const ready = await request('/health/ready')
 assert.equal(ready.status, 200, `readiness returned ${ready.status}`)
 
-const unauthenticatedModels = await request('/v1/models')
+const unauthenticatedModels = await request('/models', {}, 90_000, 'api')
 assert.equal(unauthenticatedModels.status, 401, 'models endpoint is not fail-closed')
 
-const modelsResponse = await request('/v1/models', {
-  headers: authorizedHeaders(),
-})
+const modelsResponse = await request(
+  '/models',
+  {
+    headers: authorizedHeaders(),
+  },
+  90_000,
+  'api',
+)
 assert.equal(modelsResponse.status, 200, `authenticated models returned ${modelsResponse.status}`)
 const models = await modelsResponse.json()
 assert.ok(Array.isArray(models?.data), 'models response is not OpenAI-compatible')
@@ -55,16 +64,21 @@ if (model) {
     `configured smoke model is unavailable: ${model}`,
   )
 
-  const completion = await request('/v1/chat/completions', {
-    method: 'POST',
-    headers: authorizedHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: 'Reply with exactly REMOTE_OK.' }],
-      stream: false,
-      max_tokens: 32,
-    }),
-  })
+  const completion = await request(
+    '/chat/completions',
+    {
+      method: 'POST',
+      headers: authorizedHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Reply with exactly REMOTE_OK.' }],
+        stream: false,
+        max_tokens: 32,
+      }),
+    },
+    90_000,
+    'api',
+  )
   assert.equal(completion.status, 200, `non-stream completion returned ${completion.status}`)
   const completionBody = await completion.json()
   const content = completionBody?.choices?.[0]?.message?.content
@@ -72,16 +86,21 @@ if (model) {
   assert.ok(content.trim().length > 0, 'non-stream completion returned empty content')
 
   if (testStreaming) {
-    const stream = await request('/v1/chat/completions', {
-      method: 'POST',
-      headers: authorizedHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: 'Reply with exactly STREAM_OK.' }],
-        stream: true,
-        max_tokens: 32,
-      }),
-    })
+    const stream = await request(
+      '/chat/completions',
+      {
+        method: 'POST',
+        headers: authorizedHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'Reply with exactly STREAM_OK.' }],
+          stream: true,
+          max_tokens: 32,
+        }),
+      },
+      90_000,
+      'api',
+    )
     assert.equal(stream.status, 200, `stream completion returned ${stream.status}`)
     assert.match(stream.headers.get('content-type') ?? '', /^text\/event-stream/i)
     const body = await stream.text()
