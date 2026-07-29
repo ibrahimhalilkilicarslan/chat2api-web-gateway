@@ -91,6 +91,8 @@ docker compose -f compose.yaml -f compose.local.yaml up --build
 For Coolify, use `compose.yaml`, attach a persistent volume to `/data`, inject all
 required environment variables through Coolify secrets, and route the domain to
 port `8080`. Do not mount the Docker socket or an application source directory.
+Host backup and monitoring automation is documented in
+[Operations](docs/operations.md).
 
 See:
 

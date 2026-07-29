@@ -27,9 +27,10 @@
     "security:check": "node scripts/security-guard.mjs",
     "audit:prod": "pnpm audit --prod --audit-level high",
     "backup:sqlite": "node scripts/backup-sqlite.mjs",
+    "ops:check": "bash -n scripts/ops/*.sh",
     "smoke:container": "node scripts/container-smoke.mjs",
     "smoke:remote": "node scripts/remote-smoke.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm security:check && pnpm audit:prod"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm ops:check && pnpm security:check && pnpm audit:prod"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

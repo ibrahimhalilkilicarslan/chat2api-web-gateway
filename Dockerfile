@@ -24,6 +24,7 @@ RUN pnpm lint \
   && pnpm typecheck \
   && pnpm test \
   && pnpm build \
+  && pnpm ops:check \
   && pnpm security:check \
   && pnpm prune --prod
 

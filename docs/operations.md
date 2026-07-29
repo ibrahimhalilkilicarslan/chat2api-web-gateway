@@ -46,6 +46,55 @@ container console where pnpm is unavailable.
 Back up the master encryption key separately from the database. Test restoration
 periodically in an isolated environment.
 
+### Automated host operations
+
+The repository includes least-privilege host runners that use the existing
+Docker access of the operations user. They never restart the application, read
+container environment values, or invoke Coolify:
+
+- `scripts/ops/run-production-backup.sh` creates an online SQLite backup inside
+  the running container, verifies it, copies it off the Docker volume, compares
+  SHA-256 checksums, removes the temporary volume copy, and prunes only matching
+  backups older than the configured retention.
+- `scripts/ops/check-production-health.sh` verifies container hardening,
+  liveness, readiness, fail-closed API authentication, the authenticated models
+  contract, and backup freshness. It never generates provider content.
+- `scripts/ops/install-host-operations.sh` installs working copies under the
+  current user's `~/.local/libexec` and replaces only its own marked crontab
+  block.
+
+Install or refresh the jobs from a trusted checkout:
+
+```bash
+CHAT2API_COMPOSE_PROJECT=<coolify-compose-project> \
+CHAT2API_REMOTE_ENV="$HOME/.config/chat2api-web-gateway/remote-client.env" \
+scripts/ops/install-host-operations.sh
+```
+
+The installed schedule runs backup daily at `02:43` and health monitoring every
+five minutes. Defaults:
+
+- Backups: `~/.local/share/chat2api-web-gateway/backups`
+- State and logs: `~/.local/state/chat2api-web-gateway`
+- Retention: 30 days
+- Maximum accepted backup age: 26 hours
+
+Run both checks immediately after installation:
+
+```bash
+CHAT2API_COMPOSE_PROJECT=<coolify-compose-project> \
+~/.local/libexec/chat2api-web-gateway/run-production-backup.sh
+
+CHAT2API_COMPOSE_PROJECT=<coolify-compose-project> \
+~/.local/libexec/chat2api-web-gateway/check-production-health.sh
+```
+
+The monitor records only a timestamp and coarse status. State transitions to
+failed/recovered are sent to the local system logger without credentials or
+provider content. The local host backup protects against application-container
+or Docker-volume loss, but not total host loss. Replicate verified backup files
+and the separately protected master key to access-controlled off-host storage.
+
 ## Remote smoke
 
 Read credentials from environment variables or a mode-`0600` environment file;
