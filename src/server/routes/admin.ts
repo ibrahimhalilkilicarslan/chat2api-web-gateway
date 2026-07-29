@@ -6,6 +6,10 @@ import { BUILTIN_PROVIDERS, type Account } from '../../main/store/types.js'
 import { storeManager, type ApiScope } from '../../main/store/store.js'
 import type { ConcurrencyGate } from '../gateway/concurrency.js'
 import type { ProviderRoutingEngine } from '../gateway/router.js'
+import {
+  checkProviderAccount,
+  type AccountHealthChecker,
+} from '../providers/account-health.js'
 import type { AdminAuth } from '../security/admin-auth.js'
 
 const loginSchema = z.object({
@@ -98,6 +102,7 @@ export async function registerAdminRoutes(
   adminAuth: AdminAuth,
   routing: ProviderRoutingEngine,
   concurrency: ConcurrencyGate,
+  accountHealthChecker: AccountHealthChecker = checkProviderAccount,
 ): Promise<void> {
   app.post('/admin/api/login', {
     config: {
@@ -191,6 +196,9 @@ export async function registerAdminRoutes(
       name: stored.get(provider.id)?.name ?? provider.name,
       enabled: stored.get(provider.id)?.enabled ?? false,
       description: provider.description,
+      integrationMode: provider.integrationMode,
+      routingPriority: provider.routingPriority ?? 50,
+      healthCheckSupported: provider.id === 'deepseek' || provider.id === 'deepseek-api',
       supportedModels: storeManager.getEffectiveModels(provider.id).map((model) => model.displayName),
       credentialFields: provider.credentialFields.map((field) => ({
         name: field.name,
@@ -228,6 +236,46 @@ export async function registerAdminRoutes(
 
   app.get('/admin/api/accounts', { preHandler: adminAuth.requireSession }, async (_request, reply) => {
     return reply.send(storeManager.getAccounts(false).map(safeAccount))
+  })
+
+  app.post('/admin/api/accounts/:id/test', {
+    preHandler: adminAuth.requireMutation,
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
+    const id = z.string().uuid().safeParse((request.params as { id?: unknown }).id)
+    if (!id.success) {
+      return reply.code(400).send({ error: { code: 'invalid_request', message: 'Invalid account ID.' } })
+    }
+
+    const account = storeManager.getAccountById(id.data, true)
+    if (!account) return reply.code(404).send({ error: { code: 'not_found', message: 'Account not found.' } })
+    const provider = storeManager.getProviderById(account.providerId)
+    if (!provider) return reply.code(404).send({ error: { code: 'not_found', message: 'Provider not found.' } })
+
+    const health = await accountHealthChecker(provider, account)
+    storeManager.updateAccount(account.id, {
+      status: health.healthy
+        ? account.status === 'inactive' ? 'inactive' : 'active'
+        : health.status === 'authentication_error' ? 'error' : account.status,
+      errorMessage: health.healthy ? undefined : health.message,
+    })
+    storeManager.addAuditLog({
+      actor: 'admin',
+      action: 'account.health_check',
+      targetType: 'account',
+      targetId: account.id,
+      outcome: health.healthy ? 'success' : 'failure',
+      metadata: {
+        providerId: provider.id,
+        healthCode: health.code,
+      },
+    })
+    return reply.send(health)
   })
 
   app.post('/admin/api/accounts', { preHandler: adminAuth.requireMutation }, async (request, reply) => {

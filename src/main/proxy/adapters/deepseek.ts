@@ -103,16 +103,12 @@ function unixTimestamp(): number {
 }
 
 export class DeepSeekAdapter {
-  private provider: Provider
   private account: Account
   private token: string
 
-  constructor(provider: Provider, account: Account) {
-    this.provider = provider
+  constructor(_provider: Provider, account: Account) {
     this.account = account
-    console.log('[DeepSeek] Account credentials:', JSON.stringify(account.credentials, null, 2))
     this.token = account.credentials.token || account.credentials.apiKey || account.credentials.refreshToken || ''
-    console.log('[DeepSeek] Using token:', this.token.substring(0, 20) + '...')
   }
 
   private async acquireToken(): Promise<string> {
@@ -125,8 +121,6 @@ export class DeepSeekAdapter {
       return cached.accessToken
     }
 
-    console.log('[DeepSeek] Acquiring token...')
-    
     const result = await axios.get(`${DEEPSEEK_API_BASE}/v0/users/current`, {
       headers: {
         Authorization: `Bearer ${this.token}`,
@@ -136,8 +130,6 @@ export class DeepSeekAdapter {
       validateStatus: () => true,
     })
 
-    console.log('[DeepSeek] Token response status:', result.status)
-    
     if (result.status === 401 || result.status === 403) {
       throw new Error(`Token invalid or expired, please get a new Token`)
     }
@@ -150,7 +142,6 @@ export class DeepSeekAdapter {
     const bizData = result.data?.data?.biz_data || result.data?.biz_data
     if (!bizData?.token) {
       const errorMsg = result.data?.msg || result.data?.data?.biz_msg || 'Unknown error'
-      console.log('[DeepSeek] Token response data:', JSON.stringify(result.data, null, 2))
       throw new Error(`Failed to acquire token: ${errorMsg}`)
     }
 
@@ -161,8 +152,11 @@ export class DeepSeekAdapter {
       expiresAt: unixTimestamp() + 3600,
     })
 
-    console.log('[DeepSeek] Token acquired successfully')
     return accessToken
+  }
+
+  async checkHealth(): Promise<void> {
+    await this.acquireToken()
   }
 
   private async createSession(): Promise<string> {
@@ -186,8 +180,6 @@ export class DeepSeekAdapter {
         validateStatus: () => true,
       }
     )
-
-    console.log('[DeepSeek] Create session response:', JSON.stringify(result.data, null, 2))
 
     // Response structure: { code: 0, data: { biz_code: 0, biz_data: { id: "..." } } }
     const bizData = result.data?.data?.biz_data || result.data?.biz_data
@@ -217,18 +209,14 @@ export class DeepSeekAdapter {
         }
       )
 
-      console.log('[DeepSeek] Delete session response:', JSON.stringify(result.data, null, 2))
-
       const success = result.status === 200 && result.data?.code === 0
       if (success) {
         // Clear cache
         const cacheKey = this.account.id
         sessionCache.delete(cacheKey)
-        console.log('[DeepSeek] Session deleted:', sessionId)
       }
       return success
-    } catch (error) {
-      console.error('[DeepSeek] Failed to delete session:', error)
+    } catch {
       return false
     }
   }
@@ -264,8 +252,6 @@ export class DeepSeekAdapter {
       throw new Error(`Unsupported algorithm: ${algorithm}`)
     }
     
-    console.log('[DeepSeek] Challenge parameters:', { difficulty })
-    
     const deepSeekHash = await getDeepSeekHash()
     const answer = deepSeekHash.calculateHash(algorithm, challengeStr, salt, difficulty, expire_at)
     
@@ -273,8 +259,6 @@ export class DeepSeekAdapter {
       throw new Error('Challenge calculation failed')
     }
     
-    console.log('[DeepSeek] Challenge answer found:', answer)
-
     return Buffer.from(JSON.stringify({
       algorithm,
       challenge: challengeStr,
@@ -375,7 +359,6 @@ export class DeepSeekAdapter {
     const token = await this.acquireToken()
     
     const sessionId = await this.createSession()
-    console.log('[DeepSeek] Created new session:', sessionId)
     
     const challenge = await this.getChallenge('/api/v0/chat/completion')
     const challengeAnswer = await this.calculateChallengeAnswer(challenge)
@@ -387,14 +370,6 @@ export class DeepSeekAdapter {
     let prompt = this.messagesToPrompt(messages, false)
 
     const { modelType, searchEnabled, thinkingEnabled } = resolveDeepSeekChatOptions(request, prompt)
-
-    if (request.web_search || request.model.toLowerCase().includes('search')) {
-      console.log('[DeepSeek] Web search enabled')
-    }
-
-    if (request.reasoning_effort || thinkingEnabled) {
-      console.log('[DeepSeek] Reasoning mode enabled, effort:', request.reasoning_effort)
-    }
 
     const response = await axios.post(
       `${DEEPSEEK_API_BASE}/v0/chat/completion`,
@@ -441,22 +416,18 @@ export class DeepSeekAdapter {
         }
       )
 
-      console.log('[DeepSeek] Delete all chats response:', JSON.stringify(result.data, null, 2))
-
       const success = result.status === 200 && result.data?.code === 0
       if (success) {
         sessionCache.clear()
-        console.log('[DeepSeek] All chats deleted')
       }
       return success
-    } catch (error) {
-      console.error('[DeepSeek] Failed to delete all chats:', error)
+    } catch {
       return false
     }
   }
 
   static isDeepSeekProvider(provider: Provider): boolean {
-    return provider.id === 'deepseek' || provider.apiEndpoint.includes('deepseek.com')
+    return provider.id === 'deepseek'
   }
 
   /**
@@ -465,7 +436,6 @@ export class DeepSeekAdapter {
    */
   static clearSessionCache(accountId: string): void {
     sessionCache.delete(accountId)
-    console.log('[DeepSeek] Cleared session cache for account:', accountId)
   }
 }
 

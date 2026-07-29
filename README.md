@@ -15,6 +15,8 @@ Koa, Xvfb, noVNC, or a browser automation surface.
 - Custom provider URLs are disabled; built-in endpoints are fixed in source.
 - Remote media URLs are rejected; supported images must be bounded base64 data URLs.
 - Global/per-account concurrency, per-key RPM, daily quotas, and circuit breakers are enforced.
+- Official DeepSeek API accounts are preferred over explicitly lower-priority web-session fallbacks.
+- Provider `Retry-After` hints are propagated through bounded circuit breakers.
 - Production builds remove legacy provider console diagnostics.
 - The container runs as UID/GID `10001`, with a read-only root filesystem and no Linux capabilities.
 
@@ -66,6 +68,8 @@ pnpm check
 docker compose -f compose.yaml -f compose.local.yaml config
 docker build --tag chat2api-web-gateway:local .
 pnpm smoke:container
+pnpm smoke:remote
+pnpm backup:sqlite -- --database /path/to/source.sqlite --output /secure/backup.sqlite
 ```
 
 `pnpm check` runs lint, strict type checking, unit/integration tests, production

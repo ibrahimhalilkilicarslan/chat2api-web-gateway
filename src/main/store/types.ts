@@ -17,6 +17,13 @@ export type AccountStatus = 'active' | 'inactive' | 'expired' | 'error'
  * Provider Type Enum
  */
 export type ProviderType = 'builtin' | 'custom'
+export type ProviderIntegrationMode = 'official-api' | 'web-session'
+
+export interface ProviderCapabilities {
+  jsonOutput: boolean
+  nativeToolCalling: boolean
+  webSearch: boolean
+}
 
 /**
  * Authentication Type Enum
@@ -155,6 +162,12 @@ export interface Provider {
   status?: ProviderStatus
   /** Last status check time */
   lastStatusCheck?: number
+  /** Lower values are selected before higher values during cross-provider failover. */
+  routingPriority?: number
+  /** Operational distinction between supported APIs and web-session compatibility. */
+  integrationMode?: ProviderIntegrationMode
+  /** Explicit provider features used to prevent silent capability downgrades. */
+  capabilities?: ProviderCapabilities
 }
 
 /**

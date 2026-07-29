@@ -219,6 +219,9 @@ async function executeChat(
   try {
     const result = await routing.forward(chat, contextFor(request, chat))
     if (isRoutingFailure(result)) {
+      if (result.retryAfterSeconds !== undefined) {
+        reply.header('Retry-After', String(result.retryAfterSeconds))
+      }
       storeManager.finishRequestLog(requestLog.id, {
         status: 'error',
         statusCode: result.status,

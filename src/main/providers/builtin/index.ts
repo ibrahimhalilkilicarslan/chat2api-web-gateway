@@ -1,3 +1,4 @@
+import deepseekApiConfig from './deepseek-api.ts'
 import deepseekConfig from './deepseek.ts'
 import glmConfig from './glm.ts'
 import kimiConfig from './kimi.ts'
@@ -10,6 +11,7 @@ import zaiConfig from './zai.ts'
 import type { BuiltinProviderConfig } from '../../store/types.ts'
 
 export const builtinProviders: BuiltinProviderConfig[] = [
+  deepseekApiConfig,
   deepseekConfig,
   glmConfig,
   kimiConfig,
@@ -22,6 +24,7 @@ export const builtinProviders: BuiltinProviderConfig[] = [
 ]
 
 export const builtinProviderMap: Record<string, BuiltinProviderConfig> = {
+  'deepseek-api': deepseekApiConfig,
   deepseek: deepseekConfig,
   glm: glmConfig,
   kimi: kimiConfig,
@@ -42,6 +45,7 @@ export function getBuiltinProviders(): BuiltinProviderConfig[] {
 }
 
 export {
+  deepseekApiConfig,
   deepseekConfig,
   glmConfig,
   kimiConfig,

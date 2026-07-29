@@ -76,6 +76,17 @@ if (/request\.(?:query|params).{0,80}(?:api.?key|token)/is.test(
   fail('API credentials may be accepted outside the Authorization header')
 }
 
+const deepSeekAdapter = readFileSync(
+  resolve(root, 'src/main/proxy/adapters/deepseek.ts'),
+  'utf8',
+)
+if (deepSeekAdapter.includes('console.')) {
+  fail('DeepSeek adapter contains runtime console diagnostics')
+}
+if (!deepSeekAdapter.includes("return provider.id === 'deepseek'")) {
+  fail('DeepSeek web adapter may capture the official API provider')
+}
+
 const bundlePath = resolve(root, 'dist/server/bootstrap.js')
 if (existsSync(bundlePath)) {
   const bundle = readFileSync(bundlePath, 'utf8')

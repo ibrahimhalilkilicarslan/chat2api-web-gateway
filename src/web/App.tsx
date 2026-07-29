@@ -31,6 +31,7 @@ import {
   loadDashboard,
   login,
   logout,
+  testAccount,
   updateAccount,
   updateApiKey,
   updateProvider,
@@ -203,6 +204,19 @@ export function App() {
                     'Hesap durumu güncellendi.',
                   )}
                   onAccountEdit={setEditingAccount}
+                  onAccountTest={async (account) => {
+                    setBusy(true)
+                    setError(null)
+                    try {
+                      const health = await testAccount(account.id)
+                      setNotice(`${account.name}: ${health.message} (${health.latencyMs} ms)`)
+                      await refresh()
+                    } catch (cause) {
+                      setError(cause instanceof Error ? cause.message : 'Bağlantı testi tamamlanamadı.')
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
                   onAccountDelete={(account) => {
                     if (window.confirm(`${account.name} hesabı kalıcı olarak silinsin mi?`)) {
                       void run(() => deleteAccount(account.id), 'Hesap silindi.')
@@ -436,6 +450,7 @@ function ProvidersPage(props: {
   onToggle: (provider: Provider) => void
   onAccountToggle: (account: Account) => void
   onAccountEdit: (account: Account) => void
+  onAccountTest: (account: Account) => void
   onAccountDelete: (account: Account) => void
 }) {
   return (
@@ -449,6 +464,10 @@ function ProvidersPage(props: {
               <div>
                 <h2>{provider.name}</h2>
                 <p>{provider.description}</p>
+                <span className={`integration-badge ${provider.integrationMode ?? 'web-session'}`}>
+                  {provider.integrationMode === 'official-api' ? 'Resmi API' : 'Web session'}
+                  {' · '}öncelik {provider.routingPriority}
+                </span>
               </div>
               <button
                 className={`switch ${provider.enabled ? 'is-on' : ''}`}
@@ -473,6 +492,16 @@ function ProvidersPage(props: {
                   <button className="mini-button" onClick={() => props.onAccountToggle(account)}>
                     {account.status === 'active' ? 'Duraklat' : 'Etkinleştir'}
                   </button>
+                  {provider.healthCheckSupported && (
+                    <button
+                      className="icon-button small"
+                      onClick={() => props.onAccountTest(account)}
+                      aria-label={`${account.name} bağlantısını test et`}
+                      title="Bağlantıyı test et"
+                    >
+                      <Activity size={14} />
+                    </button>
+                  )}
                   <button className="icon-button small" onClick={() => props.onAccountEdit(account)} aria-label="Hesabı düzenle">
                     <Pencil size={14} />
                   </button>

@@ -136,7 +136,9 @@ main { min-width: 0; }
 .provider-card-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: start; }
 .provider-card-head .provider-avatar { width: 39px; height: 39px; }
 .provider-card h2 { margin: 1px 0 4px; font-size: 13px; }
-.provider-card p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.provider-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.integration-badge { display: inline-flex; margin-top: 7px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted-strong); font-size: 9px; font-weight: 700; }
+.integration-badge.official-api { border-color: color-mix(in srgb, var(--success) 35%, var(--line)); color: var(--success); }
 .switch { width: 35px; height: 20px; padding: 2px; border: 0; border-radius: 999px; background: #303946; }
 .switch i { display: block; width: 16px; height: 16px; border-radius: 50%; background: #8b97a7; transition: transform .18s ease; }
 .switch.is-on { background: rgba(52,211,153,.28); }
@@ -146,8 +148,8 @@ main { min-width: 0; }
 .account-list { display: grid; gap: 7px; margin-bottom: 12px; }
 .account-row { min-height: 48px; padding: 8px 9px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-soft); border-radius: 9px; background: #0f141b; }
 .account-row > div:nth-child(2) { min-width: 0; flex: 1; }
-.account-row strong { display: block; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.account-row span { color: var(--muted); font-size: 8px; }
+.account-row strong { display: block; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.account-row span { color: var(--muted); font-size: 9px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
 .status-dot.active { background: var(--accent); box-shadow: 0 0 0 4px rgba(52,211,153,.08); }
 .status-dot.error, .status-dot.expired { background: var(--danger); }

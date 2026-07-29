@@ -21,6 +21,7 @@ import { ZaiAdapter, ZaiStreamHandler } from './adapters/zai'
 import { MiniMaxAdapter, MiniMaxStreamHandler } from './adapters/minimax'
 import { PerplexityAdapter } from './adapters/perplexity'
 import { PerplexityStreamHandler } from './adapters/perplexity-stream'
+import { parseRetryAfterMs } from './retry-after'
 import { ToolCallingEngine } from './toolCalling/ToolCallingEngine'
 import type { ToolCallingTransformResult } from './toolCalling/types'
 import { sessionManager } from './sessionManager'
@@ -232,6 +233,8 @@ export class RequestForwarder {
     const maxRetries = config.retryCount
 
     let lastError: string | undefined
+    let lastStatus: number | undefined
+    let lastRetryAfterMs: number | undefined
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
@@ -297,6 +300,8 @@ export class RequestForwarder {
         }
 
         lastError = result.error
+        lastStatus = result.status
+        lastRetryAfterMs = result.retryAfterMs
 
         if (result.status && result.status < 500 && result.status !== 429) {
           break
@@ -308,6 +313,8 @@ export class RequestForwarder {
 
     return {
       success: false,
+      status: lastStatus,
+      retryAfterMs: lastRetryAfterMs,
       error: lastError || 'Request failed after retries',
       latency: Date.now() - startTime,
     }
@@ -334,7 +341,7 @@ export class RequestForwarder {
       const chatPath = provider.chatPath || '/chat/completions'
       const url = this.buildUrl(provider, chatPath)
       const headers = this.buildHeaders(provider, account)
-      const body = this.buildRequestBody(request, actualModel, account)
+      const body = this.buildRequestBody(request, actualModel, provider)
 
       const axiosConfig: AxiosRequestConfig = {
         method: 'POST',
@@ -353,6 +360,7 @@ export class RequestForwarder {
         return {
           success: false,
           status: response.status,
+          retryAfterMs: parseRetryAfterMs(response.headers?.['retry-after']),
           error: this.extractErrorMessage(response),
           latency,
         }
@@ -382,6 +390,7 @@ export class RequestForwarder {
         return {
           success: false,
           status: error.response?.status,
+          retryAfterMs: parseRetryAfterMs(error.response?.headers?.['retry-after']),
           error: error.message,
           latency,
         }
@@ -440,6 +449,7 @@ export class RequestForwarder {
         return {
           success: false,
           status: response.status,
+          retryAfterMs: parseRetryAfterMs(response.headers?.['retry-after']),
           error: errorMessage,
           latency,
         }
@@ -503,6 +513,7 @@ export class RequestForwarder {
       return {
         success: false,
         status: error instanceof DeepSeekProviderError ? error.status : undefined,
+        retryAfterMs: error instanceof DeepSeekProviderError && error.status === 429 ? 60_000 : undefined,
         error: error instanceof Error ? error.message : 'Unknown error',
         latency,
       }
@@ -1345,7 +1356,7 @@ export class RequestForwarder {
   private buildRequestBody(
     request: ChatCompletionRequest,
     actualModel: string,
-    account: Account
+    provider: Provider,
   ): any {
     const body: any = {
       model: actualModel,
@@ -1386,7 +1397,34 @@ export class RequestForwarder {
     }
 
     if (request.user !== undefined) {
-      body.user = request.user
+      if (provider.id !== 'deepseek-api') body.user = request.user
+    }
+
+    if (request.tools !== undefined) {
+      body.tools = request.tools
+    }
+
+    if (request.tool_choice !== undefined) {
+      body.tool_choice = request.tool_choice
+    }
+
+    if (request.response_format !== undefined) {
+      body.response_format = request.response_format
+    }
+
+    if (request.stream_options !== undefined && request.stream) {
+      body.stream_options = request.stream_options
+    }
+
+    if (provider.id === 'deepseek-api') {
+      const effort = request.reasoning_effort ?? request.reasoningEffort
+      body.thinking = request.thinking ?? {
+        type: effort ? 'enabled' : 'disabled',
+      }
+      if (effort) body.reasoning_effort = 'high'
+
+      delete body.frequency_penalty
+      delete body.presence_penalty
     }
 
     return body
@@ -1477,6 +1515,7 @@ export class RequestForwarder {
         return {
           success: false,
           status: response.status,
+          retryAfterMs: parseRetryAfterMs(response.headers?.['retry-after']),
           error: this.extractErrorMessage(response),
           latency,
         }

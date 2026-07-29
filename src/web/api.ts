@@ -1,5 +1,6 @@
 import type {
   Account,
+  AccountHealthResult,
   ApiKeyRecord,
   DashboardData,
   GatewaySettings,
@@ -123,6 +124,10 @@ export function updateAccount(
 
 export function deleteAccount(id: string): Promise<void> {
   return request(`/admin/api/accounts/${id}`, { method: 'DELETE' })
+}
+
+export function testAccount(id: string): Promise<AccountHealthResult> {
+  return request(`/admin/api/accounts/${id}/test`, { method: 'POST' })
 }
 
 export function createApiKey(input: {

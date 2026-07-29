@@ -25,11 +25,48 @@ requests. An empty successful completion must not be treated as provider health.
 ## Backup
 
 Use the hosting platform's consistent volume snapshot while the container is
-stopped, or use a SQLite-aware online backup process. Copying only the main SQLite
-file while WAL writes are active is not a valid backup.
+stopped, or use the SQLite online backup command:
+
+```bash
+CHAT2API_DATABASE_PATH=/data/chat2api.sqlite \
+CHAT2API_BACKUP_PATH=/secure/off-volume/chat2api-$(date -u +%Y%m%dT%H%M%SZ).sqlite \
+pnpm backup:sqlite
+```
+
+The command refuses destinations inside the source repository, refuses
+overwrites, sets mode `0600`, and verifies `PRAGMA integrity_check`. Copying only
+the main SQLite file while WAL writes are active is not a valid backup. A backup
+inside the same persistent volume is not disaster recovery; export it to
+restricted off-volume storage.
+
+The runtime image includes the root-owned script at
+`/app/scripts/backup-sqlite.mjs`; invoke it with `node` when running from a
+container console where pnpm is unavailable.
 
 Back up the master encryption key separately from the database. Test restoration
 periodically in an isolated environment.
+
+## Remote smoke
+
+Read credentials from environment variables or a mode-`0600` environment file;
+never place API keys in command arguments:
+
+```bash
+set -a
+. /secure/path/remote-client.env
+set +a
+CHAT2API_SMOKE_MODEL=deepseek-v4-flash \
+CHAT2API_SMOKE_STREAM=true \
+pnpm smoke:remote
+```
+
+Without `CHAT2API_SMOKE_MODEL`, the command checks readiness, the unauthenticated
+boundary, and the authenticated models contract without consuming provider
+generation. With a model, it also checks non-stream and optionally stream output.
+
+Schedule readiness/model checks externally. Alert on readiness failures,
+repeated `provider_rate_limited` activity, authentication errors, open circuits,
+and backup age. Do not send prompts, responses, or credentials to alerting tools.
 
 ## Rotation
 

@@ -51,6 +51,7 @@ const messageSchema = z.object({
   name: z.string().max(128).optional(),
   tool_call_id: z.string().max(256).optional(),
   tool_calls: z.array(toolCallSchema).max(64).optional(),
+  reasoning_content: z.string().max(200_000).optional(),
 })
 
 const toolSchema = z.object({
@@ -59,6 +60,7 @@ const toolSchema = z.object({
     name: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
     description: z.string().max(8_000).optional(),
     parameters: z.record(z.string(), z.unknown()).optional(),
+    strict: z.boolean().optional(),
   }),
 })
 
@@ -88,6 +90,15 @@ const chatRequestSchema = z.object({
   }).optional(),
   reasoning_effort: z.enum(['low', 'medium', 'high']).optional(),
   reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
+  thinking: z.object({
+    type: z.enum(['enabled', 'disabled']),
+  }).optional(),
+  response_format: z.object({
+    type: z.enum(['text', 'json_object']),
+  }).optional(),
+  stream_options: z.object({
+    include_usage: z.boolean().optional(),
+  }).optional(),
   deep_research: z.boolean().optional(),
   tools: z.array(toolSchema).max(64).optional(),
   tool_choice: z.union([

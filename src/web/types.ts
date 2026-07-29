@@ -28,6 +28,18 @@ export interface Provider {
   credentialFields: CredentialField[]
   accountCount: number
   activeAccountCount: number
+  integrationMode?: 'official-api' | 'web-session'
+  routingPriority: number
+  healthCheckSupported: boolean
+}
+
+export interface AccountHealthResult {
+  healthy: boolean
+  status: 'healthy' | 'authentication_error' | 'rate_limited' | 'unavailable' | 'unsupported'
+  code: string
+  message: string
+  checkedAt: number
+  latencyMs: number
 }
 
 export interface Account {

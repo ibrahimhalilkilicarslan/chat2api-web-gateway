@@ -27,7 +27,14 @@ export const deepseekConfig: BuiltinProviderConfig = {
     'X-Client-Version': '2.0.0',
   },
   enabled: true,
-  description: 'DeepSeek AI assistant, supports deep thinking and web search',
+  routingPriority: 100,
+  integrationMode: 'web-session',
+  capabilities: {
+    jsonOutput: false,
+    nativeToolCalling: false,
+    webSearch: true,
+  },
+  description: 'DeepSeek web-session compatibility fallback with thinking and web search support.',
   supportedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
   modelMappings: {
     'deepseek-v4-flash': 'deepseek-v4-flash',

@@ -14,9 +14,17 @@ import { ConcurrencyGate } from './gateway/concurrency.js'
 import { ProviderRoutingEngine } from './gateway/router.js'
 import { registerAdminRoutes } from './routes/admin.js'
 import { registerOpenAiRoutes } from './routes/openai.js'
+import type { AccountHealthChecker } from './providers/account-health.js'
 import { AdminAuth } from './security/admin-auth.js'
 
-export async function buildApp(config: RuntimeConfig): Promise<FastifyInstance> {
+export interface AppDependencies {
+  accountHealthChecker?: AccountHealthChecker
+}
+
+export async function buildApp(
+  config: RuntimeConfig,
+  dependencies: AppDependencies = {},
+): Promise<FastifyInstance> {
   const app = Fastify({
     trustProxy: config.trustProxy,
     bodyLimit: config.maxBodyBytes,
@@ -135,7 +143,14 @@ export async function buildApp(config: RuntimeConfig): Promise<FastifyInstance> 
   })
 
   await registerOpenAiRoutes(app, routing, concurrency)
-  await registerAdminRoutes(app, config, adminAuth, routing, concurrency)
+  await registerAdminRoutes(
+    app,
+    config,
+    adminAuth,
+    routing,
+    concurrency,
+    dependencies.accountHealthChecker,
+  )
 
   const webRoot = resolve(process.cwd(), 'dist/web')
   if (existsSync(webRoot)) {

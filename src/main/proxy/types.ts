@@ -12,6 +12,7 @@ export interface ChatMessage {
   name?: string
   tool_call_id?: string
   tool_calls?: ChatCompletionMessageToolCall[]
+  reasoning_content?: string
 }
 
 /**
@@ -35,6 +36,7 @@ export interface ChatCompletionTool {
     name: string
     description?: string
     parameters?: Record<string, any>
+    strict?: boolean
   }
 }
 
@@ -94,6 +96,18 @@ export interface ChatCompletionRequest {
   reasoning_effort?: 'low' | 'medium' | 'high'
   /** Reasoning effort level (camelCase, for AI SDK compatibility) */
   reasoningEffort?: 'low' | 'medium' | 'high'
+  /** Provider-compatible thinking mode toggle. */
+  thinking?: {
+    type: 'enabled' | 'disabled'
+  }
+  /** OpenAI-compatible structured output mode. */
+  response_format?: {
+    type: 'text' | 'json_object'
+  }
+  /** OpenAI-compatible streaming options. */
+  stream_options?: {
+    include_usage?: boolean
+  }
   /** Enable deep research mode (GLM specific) */
   deep_research?: boolean
   /** Tools for function calling */
@@ -232,6 +246,7 @@ export interface ProxyContext {
 export interface ForwardResult {
   success: boolean
   status?: number
+  retryAfterMs?: number
   headers?: Record<string, string>
   body?: any
   stream?: NodeJS.ReadableStream

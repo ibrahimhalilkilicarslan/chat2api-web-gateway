@@ -27,6 +27,7 @@ export interface RoutedResult {
 export interface RoutingFailure {
   status: number
   code: string
+  retryAfterSeconds?: number
 }
 
 export interface ProviderRuntimeAdapter {
@@ -68,13 +69,14 @@ export class ProviderRoutingEngine {
     request: ChatCompletionRequest,
     context: ProxyContext,
   ): Promise<RoutedResult | RoutingFailure> {
-    const candidates = this.orderCandidates(this.getCandidates(request.model), request.model)
+    const candidates = this.orderCandidates(this.getCandidates(request), request.model)
     if (candidates.length === 0) {
       return { status: 503, code: 'no_available_account' }
     }
 
     let attempts = 0
     let lastStatus = 502
+    let rateLimitRetryAt: number | undefined
     for (const selection of candidates) {
       if (!this.tryReserve(selection.account.id)) continue
       attempts += 1
@@ -95,7 +97,16 @@ export class ProviderRoutingEngine {
       if (!result.success) {
         this.releaseAccount(selection.account.id)
         lastStatus = result.status ?? 502
-        this.recordFailure(selection.account.id, lastStatus)
+        const circuit = this.recordFailure(
+          selection.account.id,
+          lastStatus,
+          result.retryAfterMs,
+        )
+        if (lastStatus === 429 && circuit.openedUntil > 0) {
+          rateLimitRetryAt = rateLimitRetryAt === undefined
+            ? circuit.openedUntil
+            : Math.min(rateLimitRetryAt, circuit.openedUntil)
+        }
         if (lastStatus === 401 || lastStatus === 403) {
           this.store.updateAccount(selection.account.id, {
             status: 'error',
@@ -156,9 +167,13 @@ export class ProviderRoutingEngine {
       }
     }
 
+    const retryAfterSeconds = lastStatus === 429
+      ? Math.max(1, Math.ceil(((rateLimitRetryAt ?? Date.now() + 60_000) - Date.now()) / 1000))
+      : undefined
     return {
       status: lastStatus === 429 ? 429 : 502,
       code: lastStatus === 429 ? 'provider_rate_limited' : 'upstream_unavailable',
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
     }
   }
 
@@ -175,8 +190,9 @@ export class ProviderRoutingEngine {
     }
   }
 
-  private getCandidates(model: string): AccountSelection[] {
+  private getCandidates(request: ChatCompletionRequest): AccountSelection[] {
     const now = Date.now()
+    const model = request.model
     const mapping = this.store.getConfig().modelMappings[model]
     const providers = this.store.getProviders().filter((provider) => provider.enabled)
     const candidates: AccountSelection[] = []
@@ -184,6 +200,7 @@ export class ProviderRoutingEngine {
     for (const provider of providers) {
       if (mapping?.preferredProviderId && mapping.preferredProviderId !== provider.id) continue
       if (!this.providerSupportsModel(provider, model)) continue
+      if (request.web_search && provider.capabilities?.webSearch === false) continue
 
       for (const account of this.store.getAccountsByProviderId(provider.id, true)) {
         if (account.status !== 'active') continue
@@ -232,20 +249,39 @@ export class ProviderRoutingEngine {
   private orderCandidates(candidates: AccountSelection[], model: string): AccountSelection[] {
     const config = this.store.getConfig()
     const preferredAccount = config.modelMappings[model]?.preferredAccountId
-    const sorted = [...candidates].sort((left, right) => {
-      if (left.account.id === preferredAccount) return -1
-      if (right.account.id === preferredAccount) return 1
-      if (config.loadBalanceStrategy === 'fill-first') {
-        return (left.account.todayUsed ?? 0) - (right.account.todayUsed ?? 0)
-      }
-      return left.account.createdAt - right.account.createdAt
-    })
+    const groups = new Map<number, AccountSelection[]>()
 
-    if (config.loadBalanceStrategy !== 'round-robin' || sorted.length <= 1) return sorted
-    const cursor = this.roundRobinCursor.get(model) ?? 0
-    const offset = cursor % sorted.length
-    this.roundRobinCursor.set(model, cursor + 1)
-    return [...sorted.slice(offset), ...sorted.slice(0, offset)]
+    for (const candidate of candidates) {
+      const priority = candidate.provider.routingPriority ?? 50
+      const group = groups.get(priority) ?? []
+      group.push(candidate)
+      groups.set(priority, group)
+    }
+
+    const ordered: AccountSelection[] = []
+    for (const priority of [...groups.keys()].sort((left, right) => left - right)) {
+      const group = groups.get(priority) ?? []
+      const sorted = group.sort((left, right) => {
+        if (left.account.id === preferredAccount) return -1
+        if (right.account.id === preferredAccount) return 1
+        if (config.loadBalanceStrategy === 'fill-first') {
+          return (left.account.todayUsed ?? 0) - (right.account.todayUsed ?? 0)
+        }
+        return left.account.createdAt - right.account.createdAt
+      })
+
+      if (config.loadBalanceStrategy !== 'round-robin' || sorted.length <= 1) {
+        ordered.push(...sorted)
+        continue
+      }
+
+      const cursorKey = `${model}:${priority}`
+      const cursor = this.roundRobinCursor.get(cursorKey) ?? 0
+      const offset = cursor % sorted.length
+      this.roundRobinCursor.set(cursorKey, cursor + 1)
+      ordered.push(...sorted.slice(offset), ...sorted.slice(0, offset))
+    }
+    return ordered
   }
 
   private tryReserve(accountId: string): boolean {
@@ -265,17 +301,27 @@ export class ProviderRoutingEngine {
     this.circuits.delete(accountId)
   }
 
-  private recordFailure(accountId: string, status: number): void {
+  private recordFailure(accountId: string, status: number, retryAfterMs?: number): CircuitState {
     const previous = this.circuits.get(accountId) ?? { failures: 0, openedUntil: 0 }
     const failures = previous.failures + 1
     const shouldOpen = status === 429 || failures >= 3
-    const cooldown = status === 429
-      ? 60_000
+    const baseCooldown = status === 429
+      ? Math.min(15 * 60_000, Math.max(1000, retryAfterMs ?? 60_000))
       : Math.min(10 * 60_000, 15_000 * 2 ** Math.max(0, failures - 3))
-    this.circuits.set(accountId, {
+    const jitter = shouldOpen
+      ? Math.floor(baseCooldown * this.deterministicJitterRatio(accountId))
+      : 0
+    const state = {
       failures,
-      openedUntil: shouldOpen ? Date.now() + cooldown : 0,
-    })
+      openedUntil: shouldOpen ? Date.now() + Math.min(15 * 60_000, baseCooldown + jitter) : 0,
+    }
+    this.circuits.set(accountId, state)
+    return state
+  }
+
+  private deterministicJitterRatio(accountId: string): number {
+    const hash = [...accountId].reduce((total, character) => total + character.charCodeAt(0), 0)
+    return (hash % 11) / 100
   }
 
   private canFailOver(status: number): boolean {

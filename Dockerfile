@@ -45,6 +45,7 @@ RUN apt-get update \
 COPY --from=build --chown=root:root /app/package.json ./package.json
 COPY --from=build --chown=root:root /app/node_modules ./node_modules
 COPY --from=build --chown=root:root /app/dist ./dist
+COPY --from=build --chown=root:root /app/scripts/backup-sqlite.mjs ./scripts/backup-sqlite.mjs
 
 USER 10001:10001
 EXPOSE 8080

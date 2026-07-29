@@ -3,10 +3,19 @@ import type { FastifyInstance } from 'fastify'
 import type { RuntimeConfig } from '../core/config.js'
 import { storeManager } from '../main/store/store.js'
 import { buildApp } from './app.js'
+import type { AccountHealthChecker } from './providers/account-health.js'
 
 const origin = 'http://gateway.test'
 const bootstrapApiKey = 'bootstrap-api-key-that-is-at-least-thirty-two-characters'
 const adminToken = 'admin-token-that-is-at-least-thirty-two-characters'
+const accountHealthChecker: AccountHealthChecker = async () => ({
+  healthy: true,
+  status: 'healthy',
+  code: 'provider_healthy',
+  message: 'Test provider credential is valid.',
+  checkedAt: Date.now(),
+  latencyMs: 4,
+})
 
 const config: RuntimeConfig = {
   nodeEnv: 'test',
@@ -41,7 +50,7 @@ describe('gateway HTTP security contract', () => {
   let csrfToken = ''
 
   beforeAll(async () => {
-    app = await buildApp(config)
+    app = await buildApp(config, { accountHealthChecker })
     await app.ready()
   })
 
@@ -184,5 +193,35 @@ describe('gateway HTTP security contract', () => {
     const serialized = JSON.stringify(listed.json())
     expect(serialized).not.toContain(body.rawKey)
     expect(serialized).not.toContain('keyHash')
+  })
+
+  it('tests provider credentials without returning or auditing the secret', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/admin/api/accounts',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        providerId: 'deepseek-api',
+        name: 'Official API health account',
+        credentials: { apiKey: 'official-provider-key-that-must-remain-private' },
+      },
+    })
+    const account = created.json<{ id: string }>()
+
+    const health = await app.inject({
+      method: 'POST',
+      url: `/admin/api/accounts/${account.id}/test`,
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+    })
+    const serialized = JSON.stringify(health.json())
+
+    expect(health.statusCode).toBe(200)
+    expect(health.json()).toMatchObject({
+      healthy: true,
+      code: 'provider_healthy',
+    })
+    expect(serialized).not.toContain('official-provider-key-that-must-remain-private')
+    expect(JSON.stringify(storeManager.listAuditLogs(20)))
+      .not.toContain('official-provider-key-that-must-remain-private')
   })
 })

@@ -254,6 +254,9 @@ export class StoreManager {
       headers: builtIn.headers,
       supportedModels: builtIn.supportedModels,
       modelMappings: builtIn.modelMappings,
+      routingPriority: builtIn.routingPriority,
+      integrationMode: builtIn.integrationMode,
+      capabilities: builtIn.capabilities,
       updatedAt: Date.now(),
     }
     this.requireConnection()
@@ -1003,6 +1006,9 @@ export class StoreManager {
       icon: builtIn.icon,
       supportedModels: builtIn.supportedModels,
       modelMappings: builtIn.modelMappings,
+      routingPriority: builtIn.routingPriority,
+      integrationMode: builtIn.integrationMode,
+      capabilities: builtIn.capabilities,
     }
   }
 

@@ -21,6 +21,16 @@ describe('encrypted gateway store', () => {
   it('seeds providers disabled and masks credentials by default', () => {
     expect(store.getProviders()).not.toHaveLength(0)
     expect(store.getProviders().every((provider) => !provider.enabled)).toBe(true)
+    expect(store.getProviderById('deepseek-api')).toMatchObject({
+      apiEndpoint: 'https://api.deepseek.com',
+      chatPath: '/chat/completions',
+      routingPriority: 10,
+      integrationMode: 'official-api',
+    })
+    expect(store.getProviderById('deepseek')).toMatchObject({
+      routingPriority: 100,
+      integrationMode: 'web-session',
+    })
 
     const accountId = randomUUID()
     store.addAccount({
