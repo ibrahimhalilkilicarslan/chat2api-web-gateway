@@ -1,7 +1,9 @@
 import type {
   Account,
   AccountHealthResult,
+  AdminSession,
   ApiKeyRecord,
+  AuditEvent,
   DashboardData,
   GatewaySettings,
   Overview,
@@ -55,14 +57,17 @@ async function request<T>(
   return response.json() as Promise<T>
 }
 
-export async function getSession(): Promise<boolean> {
+export async function getSession(): Promise<AdminSession> {
   try {
-    const session = await request<{ authenticated: boolean; csrfToken?: string }>('/admin/api/session')
+    const session = await request<AdminSession & { csrfToken?: string }>('/admin/api/session')
     csrfToken = session.csrfToken ?? ''
-    return session.authenticated
+    return {
+      authenticated: session.authenticated,
+      expiresAt: session.expiresAt,
+    }
   } catch {
     csrfToken = ''
-    return false
+    return { authenticated: false }
   }
 }
 
@@ -80,15 +85,16 @@ export async function logout(): Promise<void> {
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
-  const [overview, providers, accounts, apiKeys, activity, settings] = await Promise.all([
+  const [overview, providers, accounts, apiKeys, activity, audit, settings] = await Promise.all([
     request<Overview>('/admin/api/overview'),
     request<Provider[]>('/admin/api/providers'),
     request<Account[]>('/admin/api/accounts'),
     request<ApiKeyRecord[]>('/admin/api/api-keys'),
     request<RequestActivity[]>('/admin/api/activity?limit=100'),
+    request<AuditEvent[]>('/admin/api/audit?limit=80'),
     request<GatewaySettings>('/admin/api/settings'),
   ])
-  return { overview, providers, accounts, apiKeys, activity, settings }
+  return { overview, providers, accounts, apiKeys, activity, audit, settings }
 }
 
 export function createAccount(input: {

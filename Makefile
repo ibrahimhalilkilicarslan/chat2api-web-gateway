@@ -1,4 +1,10 @@
-.PHONY: dev lint typecheck test build audit check docker-build docker-smoke compose-config
+.PHONY: setup doctor dev lint typecheck test build audit check docker-build docker-smoke compose-config
+
+setup:
+	pnpm setup
+
+doctor:
+	pnpm doctor
 
 dev:
 	pnpm dev

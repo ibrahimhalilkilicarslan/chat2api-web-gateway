@@ -91,6 +91,22 @@ export interface RequestActivity {
   errorCode?: string
 }
 
+export interface AuditEvent {
+  id: string
+  timestamp: number
+  actor: string
+  action: string
+  targetType?: string
+  targetId?: string
+  outcome: 'success' | 'failure'
+  metadata: Record<string, string | number | boolean>
+}
+
+export interface AdminSession {
+  authenticated: boolean
+  expiresAt?: number
+}
+
 export interface GatewaySettings {
   loadBalanceStrategy: 'round-robin' | 'least-used' | 'failover'
   requestTimeout: number
@@ -114,5 +130,6 @@ export interface DashboardData {
   accounts: Account[]
   apiKeys: ApiKeyRecord[]
   activity: RequestActivity[]
+  audit: AuditEvent[]
   settings: GatewaySettings
 }

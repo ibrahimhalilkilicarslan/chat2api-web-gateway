@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 on:
   pull_request:
@@ -18,29 +18,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+          run_install: false
+      - uses: actions/setup-node@v4
         with:
           node-version: 22.22.2
-
-      - name: Enable pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@11.17.0 --activate
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Verify application
-        run: pnpm check
-
-      - name: Build hardened container
-        run: docker build --tag chat2api-web-gateway:ci .
-
-      - name: Smoke hardened container
-        env:
-          CHAT2API_SMOKE_IMAGE: chat2api-web-gateway:ci
-        run: pnpm smoke:container
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: docker build --tag chat2api-web-gateway:ci .
+      - run: CHAT2API_SMOKE_IMAGE=chat2api-web-gateway:ci pnpm smoke:container

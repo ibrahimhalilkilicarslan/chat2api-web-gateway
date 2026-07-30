@@ -3,24 +3,41 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  CheckCircle2,
   ChevronRight,
   CircleGauge,
+  Clock3,
+  Command,
   Copy,
   Database,
+  Eye,
+  EyeOff,
+  Filter,
+  Gauge,
   KeyRound,
   Layers3,
   LockKeyhole,
   LogOut,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Server,
   ShieldCheck,
   Trash2,
   X,
+  Zap,
 } from 'lucide-react'
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react'
 import {
   ApiError,
   createAccount,
@@ -39,6 +56,7 @@ import {
 import type {
   Account,
   ApiKeyRecord,
+  AuditEvent,
   DashboardData,
   GatewaySettings,
   Provider,
@@ -47,19 +65,71 @@ import type {
 
 type View = 'overview' | 'providers' | 'keys' | 'activity' | 'security'
 
-const navigation: Array<{ id: View; label: string; icon: typeof CircleGauge }> = [
-  { id: 'overview', label: 'Genel bakış', icon: CircleGauge },
-  { id: 'providers', label: 'DeepSeek hesapları', icon: Layers3 },
-  { id: 'keys', label: 'API anahtarları', icon: KeyRound },
-  { id: 'activity', label: 'İstek aktivitesi', icon: Activity },
-  { id: 'security', label: 'Güvenlik ve ayarlar', icon: ShieldCheck },
+interface Confirmation {
+  title: string
+  description: string
+  confirmLabel: string
+  tone?: 'danger' | 'default'
+  action: () => Promise<void>
+}
+
+const navigation: Array<{
+  id: View
+  label: string
+  shortLabel: string
+  description: string
+  icon: typeof CircleGauge
+}> = [
+  {
+    id: 'overview',
+    label: 'Genel bakış',
+    shortLabel: 'Özet',
+    description: 'Sağlık ve kapasite',
+    icon: CircleGauge,
+  },
+  {
+    id: 'providers',
+    label: 'DeepSeek hesapları',
+    shortLabel: 'Hesaplar',
+    description: 'Oturum ve kota yönetimi',
+    icon: Layers3,
+  },
+  {
+    id: 'keys',
+    label: 'API anahtarları',
+    shortLabel: 'Anahtarlar',
+    description: 'İstemci erişim politikaları',
+    icon: KeyRound,
+  },
+  {
+    id: 'activity',
+    label: 'İstek aktivitesi',
+    shortLabel: 'Aktivite',
+    description: 'Metadata ve performans',
+    icon: Activity,
+  },
+  {
+    id: 'security',
+    label: 'Güvenlik',
+    shortLabel: 'Güvenlik',
+    description: 'Sınırlar ve audit kayıtları',
+    icon: ShieldCheck,
+  },
 ]
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null)
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<number | undefined>()
   const [data, setData] = useState<DashboardData | null>(null)
-  const [view, setView] = useState<View>('overview')
+  const [view, setView] = useState<View>(readViewFromHash)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => window.localStorage.getItem('c2a-sidebar-collapsed') === 'true',
+  )
+  const [autoRefresh, setAutoRefresh] = useState(
+    () => window.localStorage.getItem('c2a-auto-refresh') !== 'false',
+  )
+  const [lastSyncedAt, setLastSyncedAt] = useState<number>()
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -67,29 +137,81 @@ export function App() {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [keyPanel, setKeyPanel] = useState(false)
   const [revealedKey, setRevealedKey] = useState<string | null>(null)
+  const [commandOpen, setCommandOpen] = useState(false)
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
 
-  const refresh = async () => {
-    setBusy(true)
+  const refresh = async (silent = false) => {
+    if (!silent) setBusy(true)
     try {
       setData(await loadDashboard())
+      setLastSyncedAt(Date.now())
       setError(null)
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
         setAuthenticated(false)
-      } else {
+      } else if (!silent) {
         setError(cause instanceof Error ? cause.message : 'Veriler alınamadı.')
       }
     } finally {
-      setBusy(false)
+      if (!silent) setBusy(false)
     }
   }
 
   useEffect(() => {
-    void getSession().then((active) => {
-      setAuthenticated(active)
-      if (active) void refresh()
+    void getSession().then((session) => {
+      setAuthenticated(session.authenticated)
+      setSessionExpiresAt(session.expiresAt)
+      if (session.authenticated) void refresh()
     })
   }, [])
+
+  useEffect(() => {
+    const onHashChange = () => setView(readViewFromHash())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  useEffect(() => {
+    if (!authenticated || !autoRefresh) return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refresh(true)
+    }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [authenticated, autoRefresh])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setCommandOpen((current) => !current)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(null), 4500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  const selectView = (nextView: View) => {
+    window.location.hash = nextView
+    setView(nextView)
+    setSidebarOpen(false)
+    setCommandOpen(false)
+  }
+
+  const setCollapsed = (collapsed: boolean) => {
+    setSidebarCollapsed(collapsed)
+    window.localStorage.setItem('c2a-sidebar-collapsed', String(collapsed))
+  }
+
+  const setRefreshPolicy = (enabled: boolean) => {
+    setAutoRefresh(enabled)
+    window.localStorage.setItem('c2a-auto-refresh', String(enabled))
+  }
 
   const run = async (operation: () => Promise<unknown>, message: string) => {
     setBusy(true)
@@ -97,7 +219,7 @@ export function App() {
     try {
       await operation()
       setNotice(message)
-      await refresh()
+      await refresh(true)
       return true
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'İşlem tamamlanamadı.')
@@ -107,76 +229,130 @@ export function App() {
     }
   }
 
+  const askConfirmation = (next: Confirmation) => setConfirmation(next)
+
   if (authenticated === null) return <LoadingScreen />
   if (!authenticated) {
-    return <LoginScreen onAuthenticated={() => {
-      setAuthenticated(true)
-      void refresh()
-    }} />
+    return (
+      <LoginScreen
+        onAuthenticated={() => {
+          setAuthenticated(true)
+          void getSession().then((session) => setSessionExpiresAt(session.expiresAt))
+          void refresh()
+        }}
+      />
+    )
   }
 
-  const activeNavLabel = navigation.find((item) => item.id === view)?.label ?? 'Genel bakış'
+  const activeNavigation = navigation.find((item) => item.id === view) ?? navigation[0]!
   const editingProvider = editingAccount
     ? data?.providers.find((provider) => provider.id === editingAccount.providerId)
     : undefined
+  const gatewayState = deriveGatewayState(data)
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
       <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
         <div className="brand">
           <div className="brand-mark"><Server size={20} /></div>
-          <div>
+          <div className="brand-copy">
             <strong>Chat2API</strong>
-            <span>Secure gateway</span>
+            <span>Web Gateway</span>
           </div>
-          <button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Menüyü kapat">
+          <button
+            className="icon-button sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Menüyü kapat"
+          >
             <X size={19} />
           </button>
         </div>
+
         <nav aria-label="Yönetim menüsü">
-          {navigation.map((item) => (
-            <button
-              key={item.id}
-              className={view === item.id ? 'active' : ''}
-              onClick={() => {
-                setView(item.id)
-                setSidebarOpen(false)
-              }}
-            >
-              <item.icon size={18} />
-              <span>{item.label}</span>
-              {view === item.id && <ChevronRight size={16} className="nav-arrow" />}
-            </button>
-          ))}
+          {navigation.map((item) => {
+            const badge = getNavigationBadge(item.id, data)
+            return (
+              <button
+                key={item.id}
+                className={view === item.id ? 'active' : ''}
+                onClick={() => selectView(item.id)}
+                title={sidebarCollapsed ? item.label : undefined}
+              >
+                <span className="nav-icon"><item.icon size={18} /></span>
+                <span className="nav-copy">
+                  <strong>{item.label}</strong>
+                  <small>{item.description}</small>
+                </span>
+                {badge && <span className={`nav-badge ${badge.tone}`}>{badge.value}</span>}
+                {view === item.id && <ChevronRight size={16} className="nav-arrow" />}
+              </button>
+            )
+          })}
         </nav>
-        <div className="sidebar-security">
-          <LockKeyhole size={17} />
-          <div>
-            <strong>İzole çalışma</strong>
-            <span>Body log kapalı · secrets şifreli</span>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-security">
+            <LockKeyhole size={17} />
+            <div>
+              <strong>İzole çalışma</strong>
+              <span>İçerik loglanmaz, sırlar şifrelidir.</span>
+            </div>
           </div>
+          <button
+            className="sidebar-collapse-button"
+            onClick={() => setCollapsed(!sidebarCollapsed)}
+            aria-label={sidebarCollapsed ? 'Menüyü genişlet' : 'Menüyü daralt'}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+            <span>{sidebarCollapsed ? 'Genişlet' : 'Menüyü daralt'}</span>
+          </button>
         </div>
       </aside>
 
-      {sidebarOpen && <button className="sidebar-backdrop" aria-label="Menüyü kapat" onClick={() => setSidebarOpen(false)} />}
+      {sidebarOpen && (
+        <button
+          className="sidebar-backdrop"
+          aria-label="Menüyü kapat"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
 
       <main>
         <header className="topbar">
-          <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Menüyü aç">
+          <button
+            className="icon-button menu-button"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Menüyü aç"
+          >
             <Menu size={20} />
           </button>
-          <div>
-            <p className="eyebrow">Gateway control plane</p>
-            <h1>{activeNavLabel}</h1>
+          <div className="topbar-title">
+            <p className="eyebrow">Control plane / {activeNavigation.shortLabel}</p>
+            <h1>{activeNavigation.label}</h1>
           </div>
           <div className="topbar-actions">
-            <span className="live-status"><i /> Çalışıyor</span>
-            <button className="icon-button" onClick={() => void refresh()} disabled={busy} aria-label="Yenile">
+            <button className="command-trigger" onClick={() => setCommandOpen(true)}>
+              <Search size={16} />
+              <span>Hızlı erişim</span>
+              <kbd>⌘ K</kbd>
+            </button>
+            <span className={`live-status ${gatewayState.tone}`}>
+              <i /> {gatewayState.shortLabel}
+            </span>
+            <button
+              className="icon-button"
+              onClick={() => void refresh()}
+              disabled={busy}
+              aria-label="Yenile"
+              title={lastSyncedAt ? `Son güncelleme ${formatRelativeTime(lastSyncedAt)}` : 'Yenile'}
+            >
               <RefreshCw size={18} className={busy ? 'spin' : ''} />
             </button>
             <button
               className="icon-button"
               onClick={() => void logout().finally(() => setAuthenticated(false))}
               aria-label="Çıkış yap"
+              title="Çıkış yap"
             >
               <LogOut size={18} />
             </button>
@@ -184,18 +360,45 @@ export function App() {
         </header>
 
         <div className="content">
-          {error && <Banner tone="danger" onClose={() => setError(null)}>{error}</Banner>}
-          {notice && <Banner tone="success" onClose={() => setNotice(null)}>{notice}</Banner>}
+          <div className="sync-row">
+            <span>
+              {lastSyncedAt ? `Son güncelleme ${formatRelativeTime(lastSyncedAt)}` : 'Veriler hazırlanıyor'}
+            </span>
+            <label className="refresh-toggle">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(event) => setRefreshPolicy(event.target.checked)}
+              />
+              <span>30 sn otomatik yenile</span>
+            </label>
+          </div>
+
+          <div className="toast-region" aria-live="polite">
+            {error && <Banner tone="danger" onClose={() => setError(null)}>{error}</Banner>}
+            {notice && <Banner tone="success" onClose={() => setNotice(null)}>{notice}</Banner>}
+          </div>
+
           {!data ? <PageSkeleton /> : (
-            <>
-              {view === 'overview' && <OverviewPage data={data} setView={setView} />}
+            <div className="page-enter" key={view}>
+              {view === 'overview' && (
+                <OverviewPage
+                  data={data}
+                  gatewayState={gatewayState}
+                  onNavigate={selectView}
+                  onAddAccount={() => setAccountProvider(data.providers[0] ?? null)}
+                  onCreateKey={() => setKeyPanel(true)}
+                />
+              )}
               {view === 'providers' && (
                 <ProvidersPage
                   providers={data.providers}
                   accounts={data.accounts}
                   onAdd={setAccountProvider}
                   onAccountToggle={(account) => run(
-                    () => updateAccount(account.id, { status: account.status === 'active' ? 'inactive' : 'active' }),
+                    () => updateAccount(account.id, {
+                      status: account.status === 'active' ? 'inactive' : 'active',
+                    }),
                     'Hesap durumu güncellendi.',
                   )}
                   onAccountEdit={setEditingAccount}
@@ -205,18 +408,22 @@ export function App() {
                     try {
                       const health = await testAccount(account.id)
                       setNotice(`${account.name}: ${health.message} (${health.latencyMs} ms)`)
-                      await refresh()
+                      await refresh(true)
                     } catch (cause) {
                       setError(cause instanceof Error ? cause.message : 'Bağlantı testi tamamlanamadı.')
                     } finally {
                       setBusy(false)
                     }
                   }}
-                  onAccountDelete={(account) => {
-                    if (window.confirm(`${account.name} hesabı kalıcı olarak silinsin mi?`)) {
-                      void run(() => deleteAccount(account.id), 'Hesap silindi.')
-                    }
-                  }}
+                  onAccountDelete={(account) => askConfirmation({
+                    title: 'Hesabı sil',
+                    description: `${account.name} hesabı ve şifreli oturum bilgisi kalıcı olarak silinecek.`,
+                    confirmLabel: 'Hesabı sil',
+                    tone: 'danger',
+                    action: async () => {
+                      await run(() => deleteAccount(account.id), 'Hesap silindi.')
+                    },
+                  })}
                 />
               )}
               {view === 'keys' && (
@@ -227,24 +434,37 @@ export function App() {
                     () => updateApiKey(record.id, !record.enabled),
                     'API anahtarı güncellendi.',
                   )}
-                  onDelete={(record) => {
-                    if (window.confirm(`${record.name} anahtarı kalıcı olarak silinsin mi?`)) {
-                      void run(() => deleteApiKey(record.id), 'API anahtarı silindi.')
-                    }
-                  }}
+                  onDelete={(record) => askConfirmation({
+                    title: 'API anahtarını sil',
+                    description: `${record.name} anahtarını kullanan istemciler anında erişimi kaybedecek.`,
+                    confirmLabel: 'Anahtarı sil',
+                    tone: 'danger',
+                    action: async () => {
+                      await run(() => deleteApiKey(record.id), 'API anahtarı silindi.')
+                    },
+                  })}
                 />
               )}
-              {view === 'activity' && <ActivityPage records={data.activity} accounts={data.accounts} />}
+              {view === 'activity' && (
+                <ActivityPage records={data.activity} accounts={data.accounts} />
+              )}
               {view === 'security' && (
                 <SecurityPage
                   settings={data.settings}
-                  onSave={(settings) => run(() => updateSettings(settings), 'Gateway ayarları kaydedildi.')}
+                  audit={data.audit}
+                  sessionExpiresAt={sessionExpiresAt}
+                  onSave={(settings) => run(
+                    () => updateSettings(settings),
+                    'Gateway ayarları kaydedildi.',
+                  )}
                 />
               )}
-            </>
+            </div>
           )}
         </div>
       </main>
+
+      <MobileNavigation activeView={view} onSelect={selectView} />
 
       {accountProvider && (
         <AccountPanel
@@ -253,10 +473,7 @@ export function App() {
           onClose={() => setAccountProvider(null)}
           onSubmit={async (input) => {
             const completed = await run(
-              () => createAccount({
-                ...input,
-                dailyLimit: input.dailyLimit ?? undefined,
-              }),
+              () => createAccount({ ...input, dailyLimit: input.dailyLimit ?? undefined }),
               `${accountProvider.name} hesabı eklendi.`,
             )
             if (completed) setAccountProvider(null)
@@ -275,7 +492,9 @@ export function App() {
                 name: input.name,
                 email: input.email,
                 dailyLimit: input.dailyLimit,
-                credentials: Object.keys(input.credentials).length > 0 ? input.credentials : undefined,
+                credentials: Object.keys(input.credentials).length > 0
+                  ? input.credentials
+                  : undefined,
               }),
               `${editingAccount.name} hesabı güncellendi.`,
             )
@@ -290,11 +509,12 @@ export function App() {
           onClose={() => setKeyPanel(false)}
           onSubmit={async (input) => {
             setBusy(true)
+            setError(null)
             try {
               const created = await createApiKey(input)
               setRevealedKey(created.rawKey)
               setKeyPanel(false)
-              await refresh()
+              await refresh(true)
             } catch (cause) {
               setError(cause instanceof Error ? cause.message : 'API anahtarı oluşturulamadı.')
             } finally {
@@ -304,12 +524,43 @@ export function App() {
         />
       )}
       {revealedKey && <OneTimeKey value={revealedKey} onClose={() => setRevealedKey(null)} />}
+      {confirmation && (
+        <ConfirmDialog
+          confirmation={confirmation}
+          busy={busy}
+          onClose={() => setConfirmation(null)}
+          onConfirm={async () => {
+            await confirmation.action()
+            setConfirmation(null)
+          }}
+        />
+      )}
+      {commandOpen && (
+        <CommandPalette
+          data={data}
+          onClose={() => setCommandOpen(false)}
+          onNavigate={selectView}
+          onRefresh={() => {
+            setCommandOpen(false)
+            void refresh()
+          }}
+          onCreateKey={() => {
+            setCommandOpen(false)
+            setKeyPanel(true)
+          }}
+          onAddAccount={() => {
+            setCommandOpen(false)
+            setAccountProvider(data?.providers[0] ?? null)
+          }}
+        />
+      )}
     </div>
   )
 }
 
 function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [token, setToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -330,109 +581,239 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
 
   return (
     <div className="login-page">
-      <div className="login-atmosphere" />
-      <section className="login-card">
-        <div className="login-icon"><ShieldCheck size={28} /></div>
+      <div className="login-grid" aria-hidden="true" />
+      <div className="login-orb login-orb-one" aria-hidden="true" />
+      <div className="login-orb login-orb-two" aria-hidden="true" />
+      <section className="login-story">
+        <div className="login-brand">
+          <div className="brand-mark large"><Server size={25} /></div>
+          <div><strong>Chat2API</strong><span>DeepSeek Web Gateway</span></div>
+        </div>
         <p className="eyebrow">Private control plane</p>
-        <h1>Chat2API Gateway</h1>
-        <p>Sağlayıcı hesaplarını ve erişim anahtarlarını güvenli yönetim oturumundan kontrol edin.</p>
+        <h1>Yapay zekâ erişimini tek bir güvenli yüzeyden yönetin.</h1>
+        <p>Hesap sağlığını, istemci anahtarlarını ve istek performansını içerik kaydetmeden izleyin.</p>
+        <div className="login-assurances">
+          <span><CheckCircle2 size={16} /> Credential şifreleme</span>
+          <span><CheckCircle2 size={16} /> Metadata-only audit</span>
+          <span><CheckCircle2 size={16} /> Fail-closed erişim</span>
+        </div>
+      </section>
+      <section className="login-card">
+        <div className="login-card-header">
+          <div className="login-icon"><ShieldCheck size={25} /></div>
+          <div>
+            <p className="eyebrow">Yönetici oturumu</p>
+            <h2>Kontrol paneline giriş</h2>
+          </div>
+        </div>
+        <p>Kurulum sırasında üretilen yönetici anahtarını girin.</p>
         <form onSubmit={submit}>
-          <label htmlFor="admin-token">Yönetici erişim anahtarı</label>
-          <input
-            id="admin-token"
-            type="password"
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-            autoComplete="current-password"
-            required
-            minLength={32}
-            placeholder="••••••••••••••••"
-          />
-          {error && <p className="form-error">{error}</p>}
-          <button className="primary-button" disabled={busy}>
-            {busy ? 'Doğrulanıyor…' : <>Güvenli oturumu aç <ArrowRight size={17} /></>}
+          <Field label="Yönetici erişim anahtarı" error={error || undefined}>
+            <div className="input-with-action">
+              <input
+                id="admin-token"
+                type={showToken ? 'text' : 'password'}
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+                autoComplete="current-password"
+                required
+                minLength={32}
+                placeholder="En az 32 karakter"
+                aria-invalid={Boolean(error)}
+              />
+              <button
+                type="button"
+                className="input-action"
+                onClick={() => setShowToken(!showToken)}
+                aria-label={showToken ? 'Anahtarı gizle' : 'Anahtarı göster'}
+              >
+                {showToken ? <EyeOff size={17} /> : <Eye size={17} />}
+              </button>
+            </div>
+          </Field>
+          <button className="primary-button large-button" disabled={busy}>
+            {busy ? (
+              <><RefreshCw size={17} className="spin" /> Doğrulanıyor</>
+            ) : (
+              <>Güvenli oturumu aç <ArrowRight size={17} /></>
+            )}
           </button>
         </form>
-        <div className="login-footnote"><LockKeyhole size={14} /> Oturum 8 saat sonra otomatik kapanır.</div>
+        <div className="login-footnote">
+          <LockKeyhole size={14} />
+          Oturum çerezi HttpOnly ve SameSite Strict olarak saklanır.
+        </div>
       </section>
     </div>
   )
 }
 
-function OverviewPage({ data, setView }: { data: DashboardData; setView: (view: View) => void }) {
-  const cards = [
+function OverviewPage({
+  data,
+  gatewayState,
+  onNavigate,
+  onAddAccount,
+  onCreateKey,
+}: {
+  data: DashboardData
+  gatewayState: ReturnType<typeof deriveGatewayState>
+  onNavigate: (view: View) => void
+  onAddAccount: () => void
+  onCreateKey: () => void
+}) {
+  const recent = data.activity.slice(0, 7)
+  const readiness = [
     {
-      label: 'Aktif sağlayıcı',
-      value: `${data.overview.providers.enabled}/${data.overview.providers.total}`,
-      detail: `${data.overview.accounts.active} aktif hesap`,
+      label: 'DeepSeek hesabı',
+      detail: 'En az bir aktif web oturumu',
+      complete: data.accounts.some((account) => account.status === 'active'),
+      action: onAddAccount,
+      actionLabel: 'Hesap ekle',
+    },
+    {
+      label: 'Bağlantı kontrolü',
+      detail: 'Aktif hesabın credential testi',
+      complete: data.accounts.some((account) => account.health?.healthy),
+      action: () => onNavigate('providers'),
+      actionLabel: 'Kontrol et',
+    },
+    {
+      label: 'İstemci anahtarı',
+      detail: 'OpenAI uyumlu erişim anahtarı',
+      complete: data.apiKeys.some((record) => record.enabled),
+      action: onCreateKey,
+      actionLabel: 'Anahtar oluştur',
+    },
+    {
+      label: 'İlk başarılı istek',
+      detail: 'Gateway üzerinden tamamlanan çağrı',
+      complete: data.activity.some((record) => record.status === 'success'),
+      action: () => onNavigate('keys'),
+      actionLabel: 'Bağlantıyı kur',
+    },
+  ]
+  const readinessCount = readiness.filter((item) => item.complete).length
+  const endpoint = `${window.location.origin}/v1`
+
+  const metrics = [
+    {
+      label: 'Aktif hesap',
+      value: `${data.overview.accounts.active}/${data.overview.accounts.total}`,
+      detail: data.overview.accounts.total === 0
+        ? 'Henüz hesap eklenmedi'
+        : data.overview.accounts.attention > 0
+        ? `${data.overview.accounts.attention} hesap dikkat istiyor`
+        : 'Hesap durumu normal',
       icon: Layers3,
+      tone: data.overview.accounts.attention > 0 ? 'warning' : 'success',
     },
     {
       label: 'Bugünkü istek',
       value: formatNumber(data.overview.requests.today),
-      detail: `%${Math.round(data.overview.requests.successRate * 100)} başarı`,
+      detail: data.overview.requests.total === 0
+        ? 'Henüz trafik yok'
+        : `%${Math.round(data.overview.requests.successRate * 100)} başarı oranı`,
       icon: Activity,
+      tone: data.overview.requests.successRate >= 0.95 ? 'success' : 'warning',
     },
     {
       label: 'Ortalama gecikme',
-      value: `${formatNumber(data.overview.requests.averageLatency)} ms`,
+      value: formatDuration(data.overview.requests.averageLatency),
       detail: `${formatNumber(data.overview.requests.total)} toplam istek`,
-      icon: CircleGauge,
+      icon: Gauge,
+      tone: 'neutral',
     },
     {
       label: 'Anlık kapasite',
       value: `${data.overview.gateway.active}/${data.overview.gateway.limit}`,
-      detail: `${data.overview.gateway.openCircuits.length} açık devre`,
+      detail: data.overview.gateway.openCircuits.length > 0
+        ? `${data.overview.gateway.openCircuits.length} açık devre`
+        : 'Devre kesici normal',
       icon: Server,
+      tone: data.overview.gateway.openCircuits.length > 0 ? 'danger' : 'neutral',
     },
   ]
-  const recent = data.activity.slice(0, 7)
 
   return (
     <>
-      <section className="hero-panel">
-        <div>
-          <p className="eyebrow">Operational status</p>
-          <h2>Gateway sağlıklı ve erişim sınırları etkin.</h2>
-          <p>Credential’lar şifreli, request body logları kapalı ve tüm istemci trafiği zorunlu API anahtarıyla korunuyor.</p>
+      <section className={`hero-panel ${gatewayState.tone}`}>
+        <div className="hero-copy">
+          <span className={`hero-status ${gatewayState.tone}`}><i /> {gatewayState.label}</span>
+          <h2>{gatewayState.headline}</h2>
+          <p>{gatewayState.description}</p>
+          <div className="hero-actions">
+            <button className="primary-button" onClick={() => onNavigate(gatewayState.actionView)}>
+              {gatewayState.actionLabel} <ArrowRight size={16} />
+            </button>
+            <button className="secondary-button" onClick={() => onNavigate('activity')}>
+              Aktiviteyi incele
+            </button>
+          </div>
         </div>
-        <div className="hero-shield"><ShieldCheck size={34} /><span>Hardened</span></div>
+        <div className="readiness-ring" style={{ '--progress': `${readinessCount / readiness.length}` } as React.CSSProperties}>
+          <div><strong>{readinessCount}/{readiness.length}</strong><span>hazır</span></div>
+        </div>
       </section>
+
       <div className="metrics-grid">
-        {cards.map((card) => (
-          <article className="metric-card" key={card.label}>
-            <div className="metric-icon"><card.icon size={19} /></div>
-            <span>{card.label}</span>
-            <strong>{card.value}</strong>
-            <small>{card.detail}</small>
+        {metrics.map((metric, index) => (
+          <article className={`metric-card tone-${metric.tone}`} key={metric.label}>
+            <div className="metric-top">
+              <span>{metric.label}</span>
+              <div className="metric-icon"><metric.icon size={19} /></div>
+            </div>
+            <strong>{metric.value}</strong>
+            <small>{metric.detail}</small>
+            <MiniBars records={data.activity} offset={index} />
           </article>
         ))}
       </div>
-      <div className="two-column">
-        <section className="panel">
-          <PanelHeader title="Son istekler" subtitle="İçerik değil, yalnız operasyon metadata’sı" action={
-            <button className="text-button" onClick={() => setView('activity')}>Tümünü aç <ArrowRight size={15} /></button>
-          } />
+
+      <div className="overview-grid">
+        <section className="panel activity-panel">
+          <PanelHeader
+            title="Son istekler"
+            subtitle="Yalnız performans ve durum metadata’sı"
+            action={(
+              <button className="text-button" onClick={() => onNavigate('activity')}>
+                Tümünü aç <ArrowRight size={15} />
+              </button>
+            )}
+          />
           <ActivityTable records={recent} compact />
         </section>
-        <section className="panel">
-          <PanelHeader title="Sağlayıcı durumu" subtitle="Aktif hesap ve model kapsamı" />
-          <div className="provider-summary-list">
-            {data.providers.slice(0, 6).map((provider) => (
-              <div key={provider.id}>
-                <ProviderAvatar name={provider.name} />
-                <div>
-                  <strong>{provider.name}</strong>
-                  <span>{provider.supportedModels.length} model</span>
+
+        <div className="overview-side">
+          <section className="panel readiness-panel">
+            <PanelHeader
+              title="Kurulum durumu"
+              subtitle={`${readinessCount} / ${readiness.length} adım tamamlandı`}
+            />
+            <div className="readiness-list">
+              {readiness.map((item) => (
+                <div className={item.complete ? 'complete' : ''} key={item.label}>
+                  <span className="step-indicator">
+                    {item.complete ? <Check size={14} /> : <span />}
+                  </span>
+                  <div><strong>{item.label}</strong><small>{item.detail}</small></div>
+                  {!item.complete && (
+                    <button onClick={item.action}>{item.actionLabel}</button>
+                  )}
                 </div>
-                <StatusBadge status={provider.activeAccountCount > 0 ? 'success' : 'neutral'}>
-                  {provider.activeAccountCount > 0 ? `${provider.activeAccountCount} aktif` : 'Hesap yok'}
-                </StatusBadge>
-              </div>
-            ))}
-          </div>
-          <button className="secondary-button full" onClick={() => setView('providers')}>Sağlayıcıları yönet</button>
-        </section>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel endpoint-panel">
+            <div className="endpoint-icon"><Zap size={20} /></div>
+            <div>
+              <span className="eyebrow">OpenAI-compatible endpoint</span>
+              <h3>İstemci bağlantısı hazır</h3>
+              <p>Mevcut OpenAI SDK’nızda yalnız base URL ve API anahtarını değiştirin.</p>
+            </div>
+            <CopyField value={endpoint} label="API base URL" />
+          </section>
+        </div>
       </div>
     </>
   )
@@ -447,73 +828,129 @@ function ProvidersPage(props: {
   onAccountTest: (account: Account) => void
   onAccountDelete: (account: Account) => void
 }) {
+  const firstProvider = props.providers[0]
   return (
-    <div className="provider-grid">
-      {props.providers.map((provider) => {
-        const accounts = props.accounts.filter((account) => account.providerId === provider.id)
-        return (
-          <article className="provider-card" key={provider.id}>
-            <div className="provider-card-head">
-              <ProviderAvatar name={provider.name} />
-              <div>
-                <h2>{provider.name}</h2>
-                <p>{provider.description}</p>
-                <span className="integration-badge web-session">Web session · metin tabanlı</span>
-              </div>
-              <StatusBadge status={accounts.some((account) => account.status === 'active') ? 'success' : 'warning'}>
-                {accounts.some((account) => account.status === 'active') ? 'Hazır' : 'Hesap gerekli'}
-              </StatusBadge>
-            </div>
-            <div className="model-chips">
-              {provider.supportedModels.slice(0, 4).map((model) => <span key={model}>{model}</span>)}
-              {provider.supportedModels.length > 4 && <span>+{provider.supportedModels.length - 4}</span>}
-            </div>
-            <div className="account-list">
-              {accounts.length === 0 ? (
-                <div className="empty-row"><Database size={17} /> Henüz hesap eklenmedi.</div>
-              ) : accounts.map((account) => (
-                <div className="account-row" key={account.id}>
-                  <div className={`status-dot ${account.status}`} />
-                  <div>
-                    <strong>{account.name}</strong>
-                    <span>{account.todayUsed}/{account.dailyLimit ?? '∞'} bugün</span>
-                    {account.health && (
-                      <span>
-                        Son kontrol: {formatDate(account.health.checkedAt)}
-                        {' · '}{account.health.latencyMs} ms
-                      </span>
-                    )}
-                    {account.cooldownUntil && <span>Geçici bekleme: {formatDate(account.cooldownUntil)}</span>}
+    <>
+      <PageIntro
+        eyebrow="Provider workspace"
+        title="DeepSeek web oturumlarını yönetin"
+        description="Hesapları kapasite, sağlık ve günlük kullanım bilgisiyle tek ekranda izleyin."
+        action={firstProvider && (
+          <button className="primary-button" onClick={() => props.onAdd(firstProvider)}>
+            <Plus size={16} /> Hesap ekle
+          </button>
+        )}
+      />
+      <div className="provider-grid">
+        {props.providers.map((provider) => {
+          const accounts = props.accounts.filter((account) => account.providerId === provider.id)
+          const activeCount = accounts.filter((account) => account.status === 'active').length
+          return (
+            <article className="provider-card" key={provider.id}>
+              <div className="provider-card-head">
+                <ProviderAvatar name={provider.name} />
+                <div>
+                  <div className="title-line">
+                    <h2>{provider.name}</h2>
+                    <StatusBadge status={activeCount > 0 ? 'success' : 'warning'}>
+                      {activeCount > 0 ? `${activeCount} aktif` : 'Hesap gerekli'}
+                    </StatusBadge>
                   </div>
-                  <button className="mini-button" onClick={() => props.onAccountToggle(account)}>
-                    {account.status === 'active' ? 'Duraklat' : 'Etkinleştir'}
-                  </button>
-                  {provider.healthCheckSupported && (
-                    <button
-                      className="icon-button small"
-                      onClick={() => props.onAccountTest(account)}
-                      aria-label={`${account.name} bağlantısını test et`}
-                      title="Bağlantıyı test et"
-                    >
-                      <Activity size={14} />
-                    </button>
-                  )}
-                  <button className="icon-button small" onClick={() => props.onAccountEdit(account)} aria-label="Hesabı düzenle">
-                    <Pencil size={14} />
-                  </button>
-                  <button className="icon-button small danger" onClick={() => props.onAccountDelete(account)} aria-label="Hesabı sil">
-                    <Trash2 size={15} />
-                  </button>
+                  <p>{provider.description}</p>
+                  <div className="provider-meta">
+                    <span><Layers3 size={13} /> {provider.supportedModels.length} model</span>
+                    <span><LockKeyhole size={13} /> Web session</span>
+                    <span><Activity size={13} /> Sağlık kontrolü</span>
+                  </div>
                 </div>
-              ))}
-            </div>
-            <button className="secondary-button full" onClick={() => props.onAdd(provider)}>
-              <Plus size={16} /> Hesap ekle
-            </button>
-          </article>
-        )
-      })}
-    </div>
+              </div>
+
+              <div className="model-chips">
+                {provider.supportedModels.map((model) => <span key={model}>{model}</span>)}
+              </div>
+
+              <div className="account-list">
+                {accounts.length === 0 ? (
+                  <div className="empty-state compact-empty">
+                    <Database size={23} />
+                    <strong>Henüz hesap eklenmedi</strong>
+                    <span>İlk DeepSeek web oturumunu şifreli olarak kaydedin.</span>
+                    <button className="secondary-button" onClick={() => props.onAdd(provider)}>
+                      <Plus size={16} /> İlk hesabı ekle
+                    </button>
+                  </div>
+                ) : accounts.map((account) => {
+                  const usagePercent = account.dailyLimit
+                    ? Math.min(100, Math.round((account.todayUsed / account.dailyLimit) * 100))
+                    : 0
+                  return (
+                    <div className="account-card" key={account.id}>
+                      <div className="account-identity">
+                        <span className={`status-orb ${account.health?.healthy ? 'healthy' : account.status}`} />
+                        <div>
+                          <strong>{account.name}</strong>
+                          <span>{account.email || 'E-posta etiketi yok'}</span>
+                        </div>
+                        <StatusBadge status={accountStatusTone(account)}>
+                          {accountStatusLabel(account)}
+                        </StatusBadge>
+                      </div>
+
+                      <div className="account-stats">
+                        <div><span>Bugün</span><strong>{formatNumber(account.todayUsed)}</strong></div>
+                        <div><span>Günlük limit</span><strong>{account.dailyLimit ? formatNumber(account.dailyLimit) : 'Sınırsız'}</strong></div>
+                        <div><span>Gecikme</span><strong>{account.health ? formatDuration(account.health.latencyMs) : '—'}</strong></div>
+                        <div><span>Son kullanım</span><strong>{formatRelativeTime(account.lastUsed)}</strong></div>
+                      </div>
+
+                      {account.dailyLimit && (
+                        <div className="usage-progress">
+                          <div><span>Kota kullanımı</span><strong>%{usagePercent}</strong></div>
+                          <i><span style={{ width: `${usagePercent}%` }} /></i>
+                        </div>
+                      )}
+
+                      {account.cooldownUntil && (
+                        <div className="inline-warning">
+                          <Clock3 size={15} /> Devre kesici {formatRelativeTime(account.cooldownUntil)} kapanacak.
+                        </div>
+                      )}
+                      {account.errorMessage && (
+                        <div className="inline-warning danger">
+                          <AlertTriangle size={15} /> {account.errorMessage}
+                        </div>
+                      )}
+
+                      <div className="account-actions">
+                        {provider.healthCheckSupported && (
+                          <button className="secondary-button compact" onClick={() => props.onAccountTest(account)}>
+                            <Activity size={15} /> Bağlantıyı test et
+                          </button>
+                        )}
+                        <button className="secondary-button compact" onClick={() => props.onAccountToggle(account)}>
+                          {account.status === 'active' ? 'Duraklat' : 'Etkinleştir'}
+                        </button>
+                        <button className="icon-button small" onClick={() => props.onAccountEdit(account)} aria-label="Hesabı düzenle">
+                          <Pencil size={15} />
+                        </button>
+                        <button className="icon-button small danger" onClick={() => props.onAccountDelete(account)} aria-label="Hesabı sil">
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              {accounts.length > 0 && (
+                <button className="secondary-button full" onClick={() => props.onAdd(provider)}>
+                  <Plus size={16} /> Başka hesap ekle
+                </button>
+              )}
+            </article>
+          )
+        })}
+      </div>
+    </>
   )
 }
 
@@ -523,145 +960,283 @@ function ApiKeysPage(props: {
   onToggle: (record: ApiKeyRecord) => void
   onDelete: (record: ApiKeyRecord) => void
 }) {
+  const [query, setQuery] = useState('')
+  const [status, setStatus] = useState<'all' | 'active' | 'inactive'>('all')
+  const filtered = props.records.filter((record) => {
+    const matchesQuery = `${record.name} ${record.keyPrefix}`.toLowerCase().includes(query.toLowerCase())
+    const matchesStatus = status === 'all'
+      || (status === 'active' && record.enabled)
+      || (status === 'inactive' && !record.enabled)
+    return matchesQuery && matchesStatus
+  })
+
   return (
-    <section className="panel">
-      <PanelHeader
-        title="İstemci erişim anahtarları"
-        subtitle="Raw değer yalnız oluşturulduğu anda gösterilir."
-        action={<button className="primary-button compact" onClick={props.onCreate}><Plus size={16} /> Yeni anahtar</button>}
-      />
-      <div className="responsive-table desktop-record-table">
-        <table>
-          <thead><tr><th>Ad</th><th>Prefix</th><th>Kapsam</th><th>Kota</th><th>Son kullanım</th><th>Durum</th><th /></tr></thead>
-          <tbody>
-            {props.records.map((record) => (
-              <tr key={record.id}>
-                <td><strong>{record.name}</strong><small>{formatNumber(record.usageCount)} kullanım</small></td>
-                <td><code>{record.keyPrefix}…</code></td>
-                <td>{record.scopes.join(', ')}</td>
-                <td>{record.requestsPerMinute}/dk · {formatNumber(record.dailyQuota)}/gün</td>
-                <td>{formatDate(record.lastUsedAt)}</td>
-                <td>
-                  <StatusBadge status={record.enabled ? 'success' : 'neutral'}>{record.enabled ? 'Aktif' : 'Kapalı'}</StatusBadge>
-                  {record.managedByEnvironment && <small>Ortam tarafından yönetilir</small>}
-                </td>
-                <td className="table-actions">
-                  {!record.managedByEnvironment && (
-                    <>
-                      <button className="mini-button" onClick={() => props.onToggle(record)}>{record.enabled ? 'Kapat' : 'Aç'}</button>
-                      <button className="icon-button small danger" onClick={() => props.onDelete(record)} aria-label="Anahtarı sil"><Trash2 size={15} /></button>
-                    </>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {props.records.length === 0 && <div className="empty-state"><KeyRound size={24} /><strong>Henüz API anahtarı yok</strong></div>}
-      </div>
-      <div className="mobile-record-list">
-        {props.records.map((record) => (
-          <article className="mobile-record-card" key={record.id}>
-            <header className="mobile-record-head">
-              <div>
-                <strong>{record.name}</strong>
-                <small>{formatNumber(record.usageCount)} kullanım</small>
-              </div>
-              <StatusBadge status={record.enabled ? 'success' : 'neutral'}>
-                {record.enabled ? 'Aktif' : 'Kapalı'}
-              </StatusBadge>
-            </header>
-            <code className="mobile-key-prefix">{record.keyPrefix}…</code>
-            <dl>
-              <div><dt>Kapsam</dt><dd>{record.scopes.join(', ')}</dd></div>
-              <div><dt>Kota</dt><dd>{record.requestsPerMinute}/dk · {formatNumber(record.dailyQuota)}/gün</dd></div>
-              <div><dt>Son kullanım</dt><dd>{formatDate(record.lastUsedAt)}</dd></div>
-              <div>
-                <dt>Yönetim</dt>
-                <dd>{record.managedByEnvironment ? 'Ortam değişkeni' : 'Panel'}</dd>
-              </div>
-            </dl>
-            {!record.managedByEnvironment && (
-              <div className="mobile-record-actions">
-                <button className="mini-button" onClick={() => props.onToggle(record)}>
-                  {record.enabled ? 'Kapat' : 'Aç'}
-                </button>
-                <button
-                  className="icon-button small danger"
-                  onClick={() => props.onDelete(record)}
-                  aria-label={`${record.name} anahtarını sil`}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            )}
-          </article>
-        ))}
-        {props.records.length === 0 && (
-          <div className="empty-state"><KeyRound size={24} /><strong>Henüz API anahtarı yok</strong></div>
+    <>
+      <PageIntro
+        eyebrow="Client access"
+        title="İstemci erişimini kontrollü dağıtın"
+        description="Her entegrasyon için ayrı anahtar, model kapsamı ve kota tanımlayın."
+        action={(
+          <button className="primary-button" onClick={props.onCreate}>
+            <Plus size={16} /> Yeni anahtar
+          </button>
         )}
-      </div>
-    </section>
+      />
+      <section className="panel">
+        <div className="toolbar">
+          <label className="search-field">
+            <Search size={16} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Anahtar adı veya prefix ara"
+              aria-label="API anahtarlarında ara"
+            />
+          </label>
+          <SegmentedControl
+            value={status}
+            options={[
+              { value: 'all', label: 'Tümü' },
+              { value: 'active', label: 'Aktif' },
+              { value: 'inactive', label: 'Kapalı' },
+            ]}
+            onChange={setStatus}
+          />
+          <span className="result-count">{filtered.length} kayıt</span>
+        </div>
+
+        <div className="key-grid">
+          {filtered.map((record) => {
+            const quotaPercent = Math.min(100, Math.round((record.usageCount / record.dailyQuota) * 100))
+            return (
+              <article className="key-card" key={record.id}>
+                <header>
+                  <div className="key-card-icon"><KeyRound size={18} /></div>
+                  <div><strong>{record.name}</strong><span>{record.managedByEnvironment ? 'Ortam değişkeni' : 'Panel anahtarı'}</span></div>
+                  <StatusBadge status={record.enabled ? 'success' : 'neutral'}>
+                    {record.enabled ? 'Aktif' : 'Kapalı'}
+                  </StatusBadge>
+                </header>
+                <code>{record.keyPrefix}••••••••••••</code>
+                <dl>
+                  <div><dt>Kapsam</dt><dd>{record.scopes.join(' + ')}</dd></div>
+                  <div><dt>Model erişimi</dt><dd>{record.modelAllowlist.length || 'Tümü'}</dd></div>
+                  <div><dt>Dakikalık sınır</dt><dd>{formatNumber(record.requestsPerMinute)}</dd></div>
+                  <div><dt>Son kullanım</dt><dd>{formatRelativeTime(record.lastUsedAt)}</dd></div>
+                </dl>
+                <div className="usage-progress">
+                  <div><span>Toplam kullanım / günlük kota</span><strong>{formatNumber(record.usageCount)} / {formatNumber(record.dailyQuota)}</strong></div>
+                  <i><span style={{ width: `${quotaPercent}%` }} /></i>
+                </div>
+                {!record.managedByEnvironment && (
+                  <footer>
+                    <button className="secondary-button compact" onClick={() => props.onToggle(record)}>
+                      {record.enabled ? 'Erişimi kapat' : 'Erişimi aç'}
+                    </button>
+                    <button className="icon-button small danger" onClick={() => props.onDelete(record)} aria-label={`${record.name} anahtarını sil`}>
+                      <Trash2 size={15} />
+                    </button>
+                  </footer>
+                )}
+              </article>
+            )
+          })}
+        </div>
+        {filtered.length === 0 && (
+          <div className="empty-state">
+            <KeyRound size={25} />
+            <strong>{props.records.length === 0 ? 'Henüz API anahtarı yok' : 'Eşleşen anahtar bulunamadı'}</strong>
+            <span>{props.records.length === 0 ? 'İlk istemci bağlantısı için güvenli bir anahtar oluşturun.' : 'Arama veya filtreyi değiştirin.'}</span>
+          </div>
+        )}
+      </section>
+    </>
   )
 }
 
 function ActivityPage({ records, accounts }: { records: RequestActivity[]; accounts: Account[] }) {
+  const [query, setQuery] = useState('')
+  const [status, setStatus] = useState<'all' | RequestActivity['status']>('all')
+  const [accountId, setAccountId] = useState('all')
   const accountNames = new Map(accounts.map((account) => [account.id, account.name]))
+  const filtered = records.filter((record) => {
+    const searchable = `${record.model} ${record.actualModel ?? ''} ${record.requestId} ${record.errorCode ?? ''}`.toLowerCase()
+    return searchable.includes(query.toLowerCase())
+      && (status === 'all' || record.status === status)
+      && (accountId === 'all' || record.accountId === accountId)
+  })
+  const successCount = records.filter((record) => record.status === 'success').length
+  const failureCount = records.filter((record) => record.status === 'error').length
+  const averageLatency = records.length > 0
+    ? Math.round(records.reduce((sum, record) => sum + record.latency, 0) / records.length)
+    : 0
+
   return (
-    <section className="panel">
-      <PanelHeader title="İstek aktivitesi" subtitle="Prompt, yanıt, header veya credential içeriği saklanmaz." />
-      <ActivityTable records={records} accountNames={accountNames} />
-    </section>
+    <>
+      <PageIntro
+        eyebrow="Request telemetry"
+        title="İstek sağlığını içerik kaydetmeden izleyin"
+        description="Prompt ve yanıtlar saklanmaz; yalnız durum, model, süre ve anonim istek kimliği gösterilir."
+      />
+      <div className="activity-summary-grid">
+        <SummaryCard label="Görüntülenen" value={formatNumber(filtered.length)} icon={Filter} />
+        <SummaryCard label="Başarılı" value={formatNumber(successCount)} icon={CheckCircle2} tone="success" />
+        <SummaryCard label="Hatalı" value={formatNumber(failureCount)} icon={AlertTriangle} tone={failureCount > 0 ? 'danger' : 'neutral'} />
+        <SummaryCard label="Ortalama süre" value={formatDuration(averageLatency)} icon={Clock3} />
+      </div>
+      <section className="panel">
+        <div className="activity-chart">
+          <div>
+            <p className="eyebrow">Son istek örneklemi</p>
+            <h2>Gecikme dağılımı</h2>
+          </div>
+          <ActivityBars records={records.slice(0, 24).reverse()} />
+        </div>
+        <div className="toolbar activity-toolbar">
+          <label className="search-field">
+            <Search size={16} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Model, istek ID veya hata kodu ara"
+              aria-label="Aktivitede ara"
+            />
+          </label>
+          <select value={accountId} onChange={(event) => setAccountId(event.target.value)} aria-label="Hesaba göre filtrele">
+            <option value="all">Tüm hesaplar</option>
+            {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+          </select>
+          <SegmentedControl
+            value={status}
+            options={[
+              { value: 'all', label: 'Tümü' },
+              { value: 'success', label: 'Başarılı' },
+              { value: 'error', label: 'Hatalı' },
+              { value: 'pending', label: 'Bekliyor' },
+            ]}
+            onChange={setStatus}
+          />
+        </div>
+        <ActivityTable records={filtered} accountNames={accountNames} />
+      </section>
+    </>
   )
 }
 
 function SecurityPage({
   settings,
+  audit,
+  sessionExpiresAt,
   onSave,
 }: {
   settings: GatewaySettings
+  audit: AuditEvent[]
+  sessionExpiresAt?: number
   onSave: (settings: Pick<GatewaySettings, 'loadBalanceStrategy'>) => void
 }) {
-  const [form, setForm] = useState(settings)
+  const [strategy, setStrategy] = useState(settings.loadBalanceStrategy)
+  const securityChecks = [
+    ['Credential storage', settings.security.credentialEncryption],
+    ['API key storage', settings.security.apiKeyStorage],
+    ['İstek gövdesi logları', settings.security.requestBodiesLogged ? 'Açık' : 'Kapalı'],
+    ['Özel provider', settings.security.customProvidersEnabled ? 'Açık' : 'Kapalı'],
+    ['Uzak medya', settings.security.remoteMediaEnabled ? 'Açık' : 'Kapalı'],
+    ['Secure cookie', settings.security.secureCookies ? 'Zorunlu' : 'Geliştirme modu'],
+  ]
+
   return (
-    <div className="settings-layout">
-      <section className="panel">
-        <PanelHeader title="Yönlendirme politikası" subtitle="Değişiklikler yeni isteklere uygulanır." />
-        <form className="settings-form" onSubmit={(event) => {
-          event.preventDefault()
-          onSave({ loadBalanceStrategy: form.loadBalanceStrategy })
-        }}>
-          <Field label="Hesap seçimi">
-            <select value={form.loadBalanceStrategy} onChange={(event) => setForm({ ...form, loadBalanceStrategy: event.target.value as GatewaySettings['loadBalanceStrategy'] })}>
-              <option value="round-robin">Round robin</option>
-              <option value="least-used">En az kullanılan hesap</option>
-              <option value="failover">Sabit öncelik / failover</option>
-            </select>
-          </Field>
-          <button className="primary-button">Ayarları kaydet</button>
-        </form>
-      </section>
-      <section className="panel">
-        <PanelHeader title="Güvenlik sınırları" subtitle="Runtime tarafından zorunlu tutulan politikalar" />
-        <div className="security-list">
-          <SecurityItem label="Credential encryption" value={settings.security.credentialEncryption} />
-          <SecurityItem label="API key storage" value={settings.security.apiKeyStorage} />
-          <SecurityItem label="Request body logs" value={settings.security.requestBodiesLogged ? 'Açık' : 'Kapalı'} good={!settings.security.requestBodiesLogged} />
-          <SecurityItem label="Custom providers" value={settings.security.customProvidersEnabled ? 'Açık' : 'Kapalı'} good={!settings.security.customProvidersEnabled} />
-          <SecurityItem label="Remote media" value={settings.security.remoteMediaEnabled ? 'Açık' : 'Kapalı'} good={!settings.security.remoteMediaEnabled} />
-          <SecurityItem label="Secure cookies" value={settings.security.secureCookies ? 'Zorunlu' : 'Dev modu'} good={settings.security.secureCookies} />
-          <SecurityItem label="Provider" value={settings.security.supportedProvider} />
-          <SecurityItem label="İstek kapsamı" value={settings.security.supportedInput} />
-          <SecurityItem label="İstek timeout" value={`${settings.requestTimeout} ms (deployment)`} />
-          <SecurityItem label="Stream idle timeout" value={`${settings.streamIdleTimeout} ms`} />
-          <SecurityItem label="Hesap sağlık aralığı" value={settings.accountHealthInterval > 0 ? `${settings.accountHealthInterval} ms` : 'Kapalı'} />
+    <>
+      <PageIntro
+        eyebrow="Security posture"
+        title="Çalışma sınırları açık ve denetlenebilir"
+        description="Runtime politikaları, yönlendirme stratejisi ve yönetici işlemleri tek ekranda."
+      />
+      <div className="security-overview">
+        <section className="security-score-card">
+          <div className="security-score"><ShieldCheck size={27} /><strong>6/6</strong></div>
+          <div><span className="eyebrow">Security baseline</span><h2>Koruma sınırları etkin</h2><p>Credential, API anahtarı ve request metadata politikaları beklenen durumda.</p></div>
+        </section>
+        <section className="session-card">
+          <Clock3 size={22} />
+          <div><span>Yönetici oturumu</span><strong>{sessionExpiresAt ? formatTimeUntil(sessionExpiresAt) : 'Etkin'}</strong><small>HttpOnly · SameSite Strict</small></div>
+        </section>
+      </div>
+
+      <div className="settings-layout">
+        <section className="panel">
+          <PanelHeader title="Trafik yönlendirme" subtitle="Yeni isteklerin hesap seçim davranışı" />
+          <form className="strategy-form" onSubmit={(event) => {
+            event.preventDefault()
+            onSave({ loadBalanceStrategy: strategy })
+          }}>
+            {([
+              ['round-robin', 'Round robin', 'İstekleri aktif hesaplara sırayla dağıtır.'],
+              ['least-used', 'En az kullanılan', 'Günlük kullanımı düşük hesabı tercih eder.'],
+              ['failover', 'Sabit öncelik', 'İlk hesabı kullanır, sorun halinde sıradakine geçer.'],
+            ] as const).map(([value, label, description]) => (
+              <label className={`strategy-option ${strategy === value ? 'selected' : ''}`} key={value}>
+                <input
+                  type="radio"
+                  name="strategy"
+                  value={value}
+                  checked={strategy === value}
+                  onChange={() => setStrategy(value)}
+                />
+                <span className="strategy-radio"><Check size={14} /></span>
+                <span><strong>{label}</strong><small>{description}</small></span>
+              </label>
+            ))}
+            <button className="primary-button" disabled={strategy === settings.loadBalanceStrategy}>
+              Değişikliği kaydet
+            </button>
+          </form>
+        </section>
+
+        <section className="panel">
+          <PanelHeader title="Runtime sınırları" subtitle="Deploy sırasında kilitlenen güvenlik politikaları" />
+          <div className="security-check-grid">
+            {securityChecks.map(([label, value]) => (
+              <div key={label}>
+                <span className="security-check-icon"><Check size={14} /></span>
+                <span><small>{label}</small><strong>{value}</strong></span>
+              </div>
+            ))}
+          </div>
+          <div className="runtime-facts">
+            <div><span>Request timeout</span><strong>{formatDuration(settings.requestTimeout)}</strong></div>
+            <div><span>Stream idle</span><strong>{formatDuration(settings.streamIdleTimeout)}</strong></div>
+            <div><span>Sağlık kontrolü</span><strong>{settings.accountHealthInterval > 0 ? formatDuration(settings.accountHealthInterval) : 'Kapalı'}</strong></div>
+            <div><span>İstek kapsamı</span><strong>{settings.security.supportedInput}</strong></div>
+          </div>
+        </section>
+      </div>
+
+      <section className="panel audit-panel">
+        <PanelHeader title="Yönetim audit günlüğü" subtitle="Hassas değer içermeyen işlem izi" />
+        <div className="audit-list">
+          {audit.slice(0, 30).map((event) => (
+            <div key={event.id}>
+              <span className={`audit-icon ${event.outcome}`}>
+                {event.outcome === 'success' ? <Check size={14} /> : <AlertTriangle size={14} />}
+              </span>
+              <div>
+                <strong>{auditActionLabel(event.action)}</strong>
+                <span>{event.actor} · {event.targetType ? `${event.targetType} · ` : ''}{formatRelativeTime(event.timestamp)}</span>
+              </div>
+              <StatusBadge status={event.outcome === 'success' ? 'success' : 'danger'}>
+                {event.outcome === 'success' ? 'Başarılı' : 'Başarısız'}
+              </StatusBadge>
+            </div>
+          ))}
+          {audit.length === 0 && <div className="empty-state compact-empty"><ShieldCheck size={23} /><strong>Henüz audit kaydı yok</strong></div>}
         </div>
-        <div className="risk-note">
-          <AlertTriangle size={18} />
-          <p><strong>Web oturumu sınırı</strong> DeepSeek web protokolündeki değişiklikler erişimi kesebilir. Bu gateway resmi API fallback’i sunmaz; ayrı ve kontrollü bir DeepSeek hesabı kullanın.</p>
-        </div>
       </section>
-    </div>
+
+      <div className="risk-note wide">
+        <AlertTriangle size={19} />
+        <p><strong>Web oturumu sınırı</strong> DeepSeek web protokolü resmi API değildir ve haber vermeden değişebilir. Ayrı bir hesap kullanın, credential sağlık kontrollerini izleyin ve bu gateway’i kritik tek sağlayıcı olarak konumlandırmayın.</p>
+      </div>
+    </>
   )
 }
 
@@ -680,19 +1255,16 @@ function AccountPanel(props: {
 }) {
   const [name, setName] = useState(props.account?.name ?? '')
   const [email, setEmail] = useState(props.account?.email ?? '')
-  const [dailyLimit, setDailyLimit] = useState(
-    props.account ? String(props.account.dailyLimit ?? '') : '500',
-  )
+  const [dailyLimit, setDailyLimit] = useState(props.account ? String(props.account.dailyLimit ?? '') : '500')
   const [credentials, setCredentials] = useState<Record<string, string>>({})
   const isEditing = Boolean(props.account)
 
   return (
     <Modal
-      title={isEditing ? `${props.account?.name} hesabını düzenle` : `${props.provider.name} hesabı`}
-      subtitle={isEditing
-        ? 'Mevcut credential gösterilmez. Yalnız değiştirmek istediğiniz alanı doldurun.'
-        : 'Credential değeri kaydedildikten sonra tekrar gösterilmez.'}
+      title={isEditing ? 'DeepSeek hesabını düzenle' : 'DeepSeek hesabı ekle'}
+      subtitle={isEditing ? 'Şifreli değerler gösterilmez; yalnız değiştirmek istediğiniz credential alanını doldurun.' : 'Oturum bilgisi kaydedildiğinde AES-256-GCM ile şifrelenir.'}
       onClose={props.onClose}
+      drawer
     >
       <form className="drawer-form" onSubmit={(event) => {
         event.preventDefault()
@@ -707,47 +1279,54 @@ function AccountPanel(props: {
           dailyLimit: dailyLimit ? Number(dailyLimit) : isEditing ? null : undefined,
         })
       }}>
-        <Field label="Hesap etiketi">
-          <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Örn. DeepSeek ana hesap" />
-        </Field>
-        <div className="form-grid">
-          <Field label="E-posta (isteğe bağlı)">
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} />
+        <div className="form-section">
+          <div className="form-section-head"><span>01</span><div><strong>Hesap kimliği</strong><small>Yalnız panelde görünen operasyon etiketi</small></div></div>
+          <Field label="Hesap etiketi">
+            <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Örn. Ana DeepSeek hesabı" />
           </Field>
-          <Field label="Günlük istek sınırı" hint={isEditing ? 'Boş bırakırsanız hesap sınırı kaldırılır.' : undefined}>
-            <input type="number" min={1} max={1_000_000} value={dailyLimit} onChange={(event) => setDailyLimit(event.target.value)} />
-          </Field>
-        </div>
-        <div className="credential-box">
-          <div><LockKeyhole size={16} /><span>AES-256-GCM encrypted storage</span></div>
-          {props.provider.credentialFields.map((field) => (
-            <Field key={field.name} label={`${field.label}${field.required ? ' *' : ''}`} hint={field.helpText}>
-              {field.type === 'textarea' ? (
-                <textarea
-                  value={credentials[field.name] ?? ''}
-                  onChange={(event) => setCredentials({ ...credentials, [field.name]: event.target.value })}
-                  required={!isEditing && field.required}
-                  rows={4}
-                  autoComplete="off"
-                  placeholder={field.placeholder}
-                />
-              ) : (
-                <input
-                  type={field.type}
-                  value={credentials[field.name] ?? ''}
-                  onChange={(event) => setCredentials({ ...credentials, [field.name]: event.target.value })}
-                  required={!isEditing && field.required}
-                  autoComplete="off"
-                  placeholder={field.placeholder}
-                />
-              )}
+          <div className="form-grid">
+            <Field label="E-posta" hint="İsteğe bağlı operasyon referansı">
+              <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} placeholder="hesap@example.com" />
             </Field>
-          ))}
+            <Field label="Günlük istek sınırı" hint={isEditing ? 'Boş değer hesap sınırını kaldırır.' : 'Hesap bazlı güvenli tavan'}>
+              <input type="number" min={1} max={1_000_000} value={dailyLimit} onChange={(event) => setDailyLimit(event.target.value)} />
+            </Field>
+          </div>
+        </div>
+        <div className="form-section">
+          <div className="form-section-head"><span>02</span><div><strong>Web oturumu</strong><small>Kaydedildikten sonra tekrar görüntülenmez</small></div></div>
+          <div className="credential-box">
+            <div><LockKeyhole size={16} /><span>AES-256-GCM encrypted storage</span></div>
+            {props.provider.credentialFields.map((field) => (
+              <Field key={field.name} label={`${field.label}${field.required ? ' *' : ''}`} hint={field.helpText}>
+                {field.type === 'textarea' ? (
+                  <textarea
+                    value={credentials[field.name] ?? ''}
+                    onChange={(event) => setCredentials({ ...credentials, [field.name]: event.target.value })}
+                    required={!isEditing && field.required}
+                    rows={5}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={field.placeholder}
+                  />
+                ) : (
+                  <input
+                    type={field.type}
+                    value={credentials[field.name] ?? ''}
+                    onChange={(event) => setCredentials({ ...credentials, [field.name]: event.target.value })}
+                    required={!isEditing && field.required}
+                    autoComplete="off"
+                    placeholder={field.placeholder}
+                  />
+                )}
+              </Field>
+            ))}
+          </div>
         </div>
         <div className="modal-actions">
           <button type="button" className="secondary-button" onClick={props.onClose}>Vazgeç</button>
           <button className="primary-button" disabled={props.busy}>
-            {isEditing ? 'Değişiklikleri kaydet' : 'Hesabı şifreleyip ekle'}
+            {props.busy ? <><RefreshCw size={16} className="spin" /> Kaydediliyor</> : isEditing ? 'Değişiklikleri kaydet' : 'Hesabı şifreleyip ekle'}
           </button>
         </div>
       </form>
@@ -773,7 +1352,7 @@ function ApiKeyPanel(props: {
   const models = [...new Set(props.providers.flatMap((provider) => provider.supportedModels))].sort()
   const [selectedModels, setSelectedModels] = useState<string[]>([])
   return (
-    <Modal title="Yeni API anahtarı" subtitle="Boş model seçimi tüm aktif modellere erişim verir." onClose={props.onClose}>
+    <Modal title="Yeni API anahtarı" subtitle="İstemciye yalnız ihtiyaç duyduğu kapsamı ve kotayı verin." onClose={props.onClose} drawer>
       <form className="drawer-form" onSubmit={(event) => {
         event.preventDefault()
         void props.onSubmit({
@@ -784,21 +1363,28 @@ function ApiKeyPanel(props: {
           dailyQuota: daily,
         })
       }}>
-        <Field label="Anahtar adı">
-          <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Örn. reklam-analiz-codex" />
-        </Field>
-        <div className="form-grid">
-          <Field label="Dakikalık sınır">
-            <input type="number" min={1} max={100000} value={rpm} onChange={(event) => setRpm(Number(event.target.value))} />
-          </Field>
-          <Field label="Günlük kota">
-            <input type="number" min={1} max={10000000} value={daily} onChange={(event) => setDaily(Number(event.target.value))} />
+        <div className="form-section">
+          <div className="form-section-head"><span>01</span><div><strong>İstemci kimliği</strong><small>Anahtarın nerede kullanıldığını net adlandırın</small></div></div>
+          <Field label="Anahtar adı">
+            <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Örn. reklam-analiz-codex" />
           </Field>
         </div>
-        <Field label="Model allowlist" hint="Seçim yapmazsanız anahtar tüm aktif modellere erişebilir.">
+        <div className="form-section">
+          <div className="form-section-head"><span>02</span><div><strong>Kota politikası</strong><small>İstemci bazlı hız ve günlük kullanım sınırı</small></div></div>
+          <div className="form-grid">
+            <Field label="Dakikalık sınır">
+              <input type="number" min={1} max={100000} value={rpm} onChange={(event) => setRpm(Number(event.target.value))} />
+            </Field>
+            <Field label="Günlük kota">
+              <input type="number" min={1} max={10000000} value={daily} onChange={(event) => setDaily(Number(event.target.value))} />
+            </Field>
+          </div>
+        </div>
+        <div className="form-section">
+          <div className="form-section-head"><span>03</span><div><strong>Model erişimi</strong><small>Seçim yoksa tüm aktif modeller kullanılabilir</small></div></div>
           <div className="model-selector">
             {models.map((model) => (
-              <label key={model}>
+              <label className={selectedModels.includes(model) ? 'selected' : ''} key={model}>
                 <input
                   type="checkbox"
                   checked={selectedModels.includes(model)}
@@ -808,14 +1394,17 @@ function ApiKeyPanel(props: {
                       : selectedModels.filter((entry) => entry !== model),
                   )}
                 />
+                <span><Check size={13} /></span>
                 {model}
               </label>
             ))}
           </div>
-        </Field>
+        </div>
         <div className="modal-actions">
           <button type="button" className="secondary-button" onClick={props.onClose}>Vazgeç</button>
-          <button className="primary-button" disabled={props.busy}>Anahtarı oluştur</button>
+          <button className="primary-button" disabled={props.busy}>
+            {props.busy ? <><RefreshCw size={16} className="spin" /> Oluşturuluyor</> : 'Anahtarı oluştur'}
+          </button>
         </div>
       </form>
     </Modal>
@@ -827,24 +1416,140 @@ function OneTimeKey({ value, onClose }: { value: string; onClose: () => void }) 
   const baseUrl = window.location.origin
   const example = `OPENAI_BASE_URL=${baseUrl}/v1\nOPENAI_API_KEY=<bu-ekrandaki-anahtar>\n\ncurl "${baseUrl}/v1/models" \\\n  -H "Authorization: Bearer $OPENAI_API_KEY"`
   return (
-    <Modal title="API anahtarınız hazır" subtitle="Bu değer tekrar gösterilmeyecek." onClose={onClose} narrow>
+    <Modal title="API anahtarı oluşturuldu" subtitle="Raw değer yalnız bu ekranda bir kez gösterilir." onClose={onClose} narrow>
+      <div className="success-illustration"><CheckCircle2 size={29} /></div>
       <div className="one-time-key">
         <code>{value}</code>
         <button onClick={() => void navigator.clipboard.writeText(value).then(() => setCopied('key'))}>
-          {copied === 'key' ? <Check size={17} /> : <Copy size={17} />} {copied === 'key' ? 'Kopyalandı' : 'Kopyala'}
+          {copied === 'key' ? <Check size={17} /> : <Copy size={17} />}
+          {copied === 'key' ? 'Kopyalandı' : 'Kopyala'}
         </button>
       </div>
-      <div className="credential-box">
-        <div><Server size={16} /><span>Uzak istemci kurulumu</span></div>
+      <div className="credential-box example-box">
+        <div><Server size={16} /><span>İstemci ortam değişkenleri</span></div>
         <pre><code>{example}</code></pre>
         <button className="secondary-button full" onClick={() => void navigator.clipboard.writeText(example).then(() => setCopied('example'))}>
           {copied === 'example' ? <Check size={17} /> : <Copy size={17} />}
-          {copied === 'example' ? 'Komut kopyalandı' : 'Kurulum örneğini kopyala'}
+          {copied === 'example' ? 'Örnek kopyalandı' : 'Kurulum örneğini kopyala'}
         </button>
       </div>
-      <div className="risk-note"><AlertTriangle size={18} /><p>Anahtarı yalnız güvenli secret manager’da saklayın. URL, kaynak kod veya sohbet mesajına eklemeyin.</p></div>
-      <button className="primary-button full" onClick={onClose}>Kaydettim, kapat</button>
+      <div className="risk-note"><AlertTriangle size={18} /><p>Anahtarı secret manager’da saklayın. Kaynak kod, URL veya sohbet mesajına eklemeyin.</p></div>
+      <button className="primary-button full modal-final-button" onClick={onClose}>Anahtarı güvenle sakladım</button>
     </Modal>
+  )
+}
+
+function ConfirmDialog({
+  confirmation,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  confirmation: Confirmation
+  busy: boolean
+  onClose: () => void
+  onConfirm: () => Promise<void>
+}) {
+  return (
+    <Modal title={confirmation.title} subtitle={confirmation.description} onClose={onClose} narrow>
+      <div className={`confirm-visual ${confirmation.tone === 'danger' ? 'danger' : ''}`}>
+        <AlertTriangle size={25} />
+      </div>
+      <div className="confirm-copy">
+        <strong>Bu işlem geri alınamaz.</strong>
+        <p>Devam etmeden önce bağlı istemci ve operasyon etkisini doğrulayın.</p>
+      </div>
+      <div className="confirm-actions">
+        <button className="secondary-button" onClick={onClose}>Vazgeç</button>
+        <button className={confirmation.tone === 'danger' ? 'danger-button' : 'primary-button'} disabled={busy} onClick={() => void onConfirm()}>
+          {busy ? 'İşleniyor' : confirmation.confirmLabel}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+function CommandPalette({
+  data,
+  onClose,
+  onNavigate,
+  onRefresh,
+  onCreateKey,
+  onAddAccount,
+}: {
+  data: DashboardData | null
+  onClose: () => void
+  onNavigate: (view: View) => void
+  onRefresh: () => void
+  onCreateKey: () => void
+  onAddAccount: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => inputRef.current?.focus(), [])
+  const actions = [
+    ...navigation.map((item) => ({
+      id: item.id,
+      label: item.label,
+      description: item.description,
+      icon: item.icon,
+      action: () => onNavigate(item.id),
+    })),
+    {
+      id: 'add-account',
+      label: 'DeepSeek hesabı ekle',
+      description: 'Yeni web oturumu kaydet',
+      icon: Plus,
+      action: onAddAccount,
+    },
+    {
+      id: 'create-key',
+      label: 'API anahtarı oluştur',
+      description: 'Yeni istemci erişimi tanımla',
+      icon: KeyRound,
+      action: onCreateKey,
+    },
+    {
+      id: 'refresh',
+      label: 'Verileri yenile',
+      description: data ? `${data.activity.length} aktivite kaydı yüklü` : 'Paneli yeniden yükle',
+      icon: RefreshCw,
+      action: onRefresh,
+    },
+  ]
+  const filtered = actions.filter((action) => `${action.label} ${action.description}`.toLowerCase().includes(query.toLowerCase()))
+  return (
+    <div className="command-layer" onMouseDown={(event) => {
+      if (event.currentTarget === event.target) onClose()
+    }}>
+      <section className="command-palette" role="dialog" aria-modal="true" aria-label="Hızlı erişim">
+        <div className="command-search">
+          <Search size={18} />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Sayfa veya işlem ara"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') onClose()
+              if (event.key === 'Enter' && filtered[0]) filtered[0].action()
+            }}
+          />
+          <kbd>ESC</kbd>
+        </div>
+        <div className="command-results">
+          {filtered.map((action) => (
+            <button key={action.id} onClick={action.action}>
+              <span><action.icon size={17} /></span>
+              <div><strong>{action.label}</strong><small>{action.description}</small></div>
+              <ChevronRight size={16} />
+            </button>
+          ))}
+          {filtered.length === 0 && <div className="command-empty">Eşleşen işlem bulunamadı.</div>}
+        </div>
+        <footer><Command size={13} /> İlk sonucu açmak için Enter</footer>
+      </section>
+    </div>
   )
 }
 
@@ -859,111 +1564,331 @@ function ActivityTable({
 }) {
   return (
     <>
-      <div className="responsive-table activity-table desktop-record-table">
+      <div className="responsive-table desktop-record-table">
         <table>
-          <thead><tr><th>Durum</th><th>Model</th>{!compact && <th>Hesap</th>}<th>Süre</th><th>Zaman</th></tr></thead>
+          <thead><tr><th>Durum</th><th>Model / istek</th>{!compact && <th>Hesap</th>}<th>Süre</th><th>Zaman</th></tr></thead>
           <tbody>
             {records.map((record) => (
               <tr key={record.id}>
-                <td><StatusBadge status={record.status === 'success' ? 'success' : record.status === 'pending' ? 'warning' : 'danger'}>{record.status}</StatusBadge></td>
+                <td><StatusBadge status={activityTone(record.status)}>{activityStatusLabel(record.status)}</StatusBadge></td>
                 <td><strong>{record.model}</strong><small>{record.isStream ? 'stream' : 'json'} · {record.requestId.slice(0, 8)}</small></td>
                 {!compact && <td>{accountNames.get(record.accountId ?? '') ?? record.providerId ?? '—'}</td>}
-                <td>{formatNumber(record.latency)} ms</td>
+                <td>{formatDuration(record.latency)}</td>
                 <td>{formatDate(record.timestamp)}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        {records.length === 0 && <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong></div>}
+        {records.length === 0 && <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong><span>İlk istemci çağrısı burada görünecek.</span></div>}
       </div>
       <div className="mobile-record-list">
         {records.map((record) => (
-          <article className="mobile-record-card activity-record-card" key={record.id}>
-            <header className="mobile-record-head">
-              <StatusBadge status={record.status === 'success' ? 'success' : record.status === 'pending' ? 'warning' : 'danger'}>
-                {record.status}
-              </StatusBadge>
-              <time>{formatDate(record.timestamp)}</time>
+          <article className="mobile-record-card" key={record.id}>
+            <header>
+              <StatusBadge status={activityTone(record.status)}>{activityStatusLabel(record.status)}</StatusBadge>
+              <time>{formatRelativeTime(record.timestamp)}</time>
             </header>
-            <div className="mobile-record-title">
-              <strong>{record.model}</strong>
-              <small>{record.isStream ? 'stream' : 'json'} · {record.requestId.slice(0, 8)}</small>
-            </div>
+            <div className="mobile-record-title"><strong>{record.model}</strong><small>{record.isStream ? 'stream' : 'json'} · {record.requestId.slice(0, 8)}</small></div>
             <dl>
-              {!compact && (
-                <div>
-                  <dt>Hesap</dt>
-                  <dd>{accountNames.get(record.accountId ?? '') ?? record.providerId ?? '—'}</dd>
-                </div>
-              )}
-              <div><dt>Süre</dt><dd>{formatNumber(record.latency)} ms</dd></div>
+              {!compact && <div><dt>Hesap</dt><dd>{accountNames.get(record.accountId ?? '') ?? record.providerId ?? '—'}</dd></div>}
+              <div><dt>Süre</dt><dd>{formatDuration(record.latency)}</dd></div>
             </dl>
           </article>
         ))}
-        {records.length === 0 && (
-          <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong></div>
-        )}
+        {records.length === 0 && <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong></div>}
       </div>
     </>
   )
+}
+
+function MobileNavigation({ activeView, onSelect }: { activeView: View; onSelect: (view: View) => void }) {
+  return (
+    <nav className="mobile-navigation" aria-label="Mobil yönetim menüsü">
+      {navigation.map((item) => (
+        <button className={activeView === item.id ? 'active' : ''} key={item.id} onClick={() => onSelect(item.id)}>
+          <item.icon size={18} />
+          <span>{item.shortLabel}</span>
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
+  return (
+    <section className="page-intro">
+      <div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2><p>{description}</p></div>
+      {action}
+    </section>
+  )
+}
+
+function SummaryCard({ label, value, icon: Icon, tone = 'neutral' }: { label: string; value: string; icon: typeof Activity; tone?: 'success' | 'danger' | 'neutral' }) {
+  return <article className={`summary-card ${tone}`}><span><Icon size={17} /></span><div><small>{label}</small><strong>{value}</strong></div></article>
+}
+
+function MiniBars({ records, offset }: { records: RequestActivity[]; offset: number }) {
+  const values = Array.from({ length: 12 }, (_, index) => {
+    const record = records[(index + offset) % Math.max(records.length, 1)]
+    if (!record) return 14 + ((index * 7 + offset * 11) % 38)
+    return Math.max(12, Math.min(58, Math.round(record.latency / 80)))
+  })
+  return <div className="mini-bars" aria-hidden="true">{values.map((value, index) => <i key={index} style={{ height: `${value}%` }} />)}</div>
+}
+
+function ActivityBars({ records }: { records: RequestActivity[] }) {
+  const max = Math.max(...records.map((record) => record.latency), 1)
+  if (records.length === 0) return <div className="activity-bars empty-bars"><span>İstek geldikçe grafik oluşur.</span></div>
+  return (
+    <div className="activity-bars" aria-label="Son istek gecikme grafiği">
+      {records.map((record) => (
+        <i
+          className={record.status}
+          key={record.id}
+          style={{ height: `${Math.max(8, (record.latency / max) * 100)}%` }}
+          title={`${record.model}: ${formatDuration(record.latency)}`}
+        />
+      ))}
+    </div>
+  )
+}
+
+function CopyField({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="copy-field">
+      <span>{label}</span>
+      <div><code>{value}</code><button onClick={() => void navigator.clipboard.writeText(value).then(() => setCopied(true))}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? 'Kopyalandı' : 'Kopyala'}</button></div>
+    </div>
+  )
+}
+
+function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T
+  options: Array<{ value: T; label: string }>
+  onChange: (value: T) => void
+}) {
+  return <div className="segmented-control">{options.map((option) => <button className={option.value === value ? 'active' : ''} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>
 }
 
 function PanelHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
   return <div className="panel-header"><div><h2>{title}</h2><p>{subtitle}</p></div>{action}</div>
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>
+function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string; children: ReactNode }) {
+  return <label className={`field ${error ? 'has-error' : ''}`}><span>{label}</span>{children}{error ? <small className="field-error">{error}</small> : hint && <small>{hint}</small>}</label>
 }
 
-function Modal(props: { title: string; subtitle: string; children: ReactNode; onClose: () => void; narrow?: boolean }) {
+function Modal({
+  title,
+  subtitle,
+  children,
+  onClose,
+  narrow = false,
+  drawer = false,
+}: {
+  title: string
+  subtitle: string
+  children: ReactNode
+  onClose: () => void
+  narrow?: boolean
+  drawer?: boolean
+}) {
+  const dialogRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    dialogRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [onClose])
+
   return (
-    <div className="modal-layer" role="presentation" onMouseDown={(event) => {
-      if (event.currentTarget === event.target) props.onClose()
+    <div className={`modal-layer ${drawer ? 'drawer-layer' : ''}`} role="presentation" onMouseDown={(event) => {
+      if (event.currentTarget === event.target) onClose()
     }}>
-      <section className={`modal ${props.narrow ? 'narrow' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <section
+        ref={dialogRef}
+        tabIndex={-1}
+        className={`modal ${narrow ? 'narrow' : ''} ${drawer ? 'drawer' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+      >
         <div className="modal-head">
-          <div><h2 id="modal-title">{props.title}</h2><p>{props.subtitle}</p></div>
-          <button className="icon-button" onClick={props.onClose} aria-label="Kapat"><X size={19} /></button>
+          <div><p className="eyebrow">{drawer ? 'Yapılandırma' : 'Güvenli işlem'}</p><h2 id="modal-title">{title}</h2><span>{subtitle}</span></div>
+          <button className="icon-button" onClick={onClose} aria-label="Kapat"><X size={19} /></button>
         </div>
-        {props.children}
+        {children}
       </section>
     </div>
   )
 }
 
 function Banner({ tone, children, onClose }: { tone: 'danger' | 'success'; children: ReactNode; onClose: () => void }) {
-  return <div className={`banner ${tone}`}>{tone === 'success' ? <Check size={17} /> : <AlertTriangle size={17} />}<span>{children}</span><button onClick={onClose}><X size={15} /></button></div>
+  return <div className={`banner ${tone}`}>{tone === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{children}</span><button onClick={onClose} aria-label="Bildirimi kapat"><X size={15} /></button></div>
 }
 
 function StatusBadge({ status, children }: { status: 'success' | 'danger' | 'warning' | 'neutral'; children: ReactNode }) {
-  return <span className={`status-badge ${status}`}>{children}</span>
+  return <span className={`status-badge ${status}`}><i />{children}</span>
 }
 
 function ProviderAvatar({ name }: { name: string }) {
   return <span className="provider-avatar">{name.slice(0, 2).toUpperCase()}</span>
 }
 
-function SecurityItem({ label, value, good = true }: { label: string; value: string; good?: boolean }) {
-  return <div><span>{label}</span><strong className={good ? 'good' : 'warning-text'}>{good && <Check size={14} />}{value}</strong></div>
-}
-
 function LoadingScreen() {
-  return <div className="loading-screen"><div className="brand-mark"><Server size={22} /></div><span>Gateway hazırlanıyor</span></div>
+  return <div className="loading-screen"><div className="brand-mark large"><Server size={23} /></div><div className="loading-pulse"><i /><i /><i /></div><span>Gateway hazırlanıyor</span></div>
 }
 
 function PageSkeleton() {
   return <div className="skeleton-grid">{Array.from({ length: 8 }, (_, index) => <div key={index} />)}</div>
 }
 
+function deriveGatewayState(data: DashboardData | null) {
+  if (!data || data.accounts.length === 0) {
+    return {
+      tone: 'warning' as const,
+      shortLabel: 'Kurulum gerekli',
+      label: 'Başlangıç adımı',
+      headline: 'İlk DeepSeek hesabınızı bağlayın.',
+      description: 'Gateway çalışıyor; istemci trafiği almadan önce şifreli bir web oturumu ekleyin ve bağlantıyı doğrulayın.',
+      actionView: 'providers' as View,
+      actionLabel: 'Hesapları aç',
+    }
+  }
+  if (data.overview.accounts.attention > 0 || data.overview.gateway.openCircuits.length > 0) {
+    return {
+      tone: 'danger' as const,
+      shortLabel: 'Dikkat gerekli',
+      label: 'Operasyon uyarısı',
+      headline: 'Bir hesap veya devre kontrol bekliyor.',
+      description: 'İstemci trafiği etkilenmeden önce hesap sağlığını ve devre kesici durumunu inceleyin.',
+      actionView: 'providers' as View,
+      actionLabel: 'Sorunu incele',
+    }
+  }
+  if (!data.accounts.some((account) => account.health?.healthy)) {
+    return {
+      tone: 'warning' as const,
+      shortLabel: 'Kontrol bekliyor',
+      label: 'Credential doğrulaması',
+      headline: 'Gateway hazır; hesap sağlığını doğrulayın.',
+      description: 'Aktif oturum mevcut ancak son credential sağlık kontrolü henüz tamamlanmamış.',
+      actionView: 'providers' as View,
+      actionLabel: 'Bağlantıyı test et',
+    }
+  }
+  return {
+    tone: 'success' as const,
+    shortLabel: 'Operasyonel',
+    label: 'Tüm sistemler normal',
+    headline: 'Gateway trafiği güvenle karşılamaya hazır.',
+    description: 'Aktif hesaplar sağlıklı, erişim sınırları etkin ve istek gövdeleri operasyon loglarına yazılmıyor.',
+    actionView: 'activity' as View,
+    actionLabel: 'Canlı aktivite',
+  }
+}
+
+function getNavigationBadge(view: View, data: DashboardData | null): { value: string; tone: string } | null {
+  if (!data) return null
+  if (view === 'providers' && data.overview.accounts.attention > 0) return { value: String(data.overview.accounts.attention), tone: 'danger' }
+  if (view === 'providers') return { value: String(data.overview.accounts.active), tone: 'neutral' }
+  if (view === 'keys') return { value: String(data.apiKeys.filter((record) => record.enabled).length), tone: 'neutral' }
+  if (view === 'activity' && data.overview.requests.today > 0) return { value: formatNumber(data.overview.requests.today), tone: 'neutral' }
+  return null
+}
+
+function readViewFromHash(): View {
+  const candidate = window.location.hash.replace('#', '')
+  return navigation.some((item) => item.id === candidate) ? candidate as View : 'overview'
+}
+
+function accountStatusTone(account: Account): 'success' | 'danger' | 'warning' | 'neutral' {
+  if (account.status === 'error' || account.status === 'expired') return 'danger'
+  if (account.cooldownUntil || account.health?.status === 'rate_limited') return 'warning'
+  if (account.status === 'active' && account.health?.healthy) return 'success'
+  return 'neutral'
+}
+
+function accountStatusLabel(account: Account): string {
+  if (account.cooldownUntil) return 'Beklemede'
+  if (account.health?.healthy) return account.status === 'active' ? 'Sağlıklı' : 'Duraklatıldı'
+  if (account.status === 'error') return 'Hatalı'
+  if (account.status === 'expired') return 'Süresi doldu'
+  if (account.status === 'inactive') return 'Kapalı'
+  return 'Kontrol bekliyor'
+}
+
+function activityTone(status: RequestActivity['status']): 'success' | 'danger' | 'warning' {
+  return status === 'success' ? 'success' : status === 'pending' ? 'warning' : 'danger'
+}
+
+function activityStatusLabel(status: RequestActivity['status']): string {
+  return status === 'success' ? 'Başarılı' : status === 'pending' ? 'Bekliyor' : 'Hatalı'
+}
+
+function auditActionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    'admin.login': 'Yönetici oturumu',
+    'admin.logout': 'Oturum kapatıldı',
+    'account.create': 'Provider hesabı eklendi',
+    'account.update': 'Provider hesabı güncellendi',
+    'account.delete': 'Provider hesabı silindi',
+    'account.health_check': 'Credential sağlık kontrolü',
+    'api_key.create': 'API anahtarı oluşturuldu',
+    'api_key.update': 'API anahtarı güncellendi',
+    'api_key.delete': 'API anahtarı silindi',
+    'gateway.settings.update': 'Gateway ayarı güncellendi',
+  }
+  return labels[action] ?? action
+}
+
 function formatNumber(value: number): string {
   return new Intl.NumberFormat('tr-TR').format(value)
 }
 
+function formatDuration(value: number): string {
+  if (value >= 60_000) return `${(value / 60_000).toFixed(1)} dk`
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)} sn`
+  return `${formatNumber(value)} ms`
+}
+
 function formatDate(value?: number): string {
   if (!value) return '—'
-  return new Intl.DateTimeFormat('tr-TR', {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  }).format(value)
+  return new Intl.DateTimeFormat('tr-TR', { dateStyle: 'short', timeStyle: 'short' }).format(value)
+}
+
+function formatRelativeTime(value?: number): string {
+  if (!value) return 'Henüz yok'
+  const difference = value - Date.now()
+  const absolute = Math.abs(difference)
+  if (absolute < 60_000) return difference > 0 ? 'birazdan' : 'şimdi'
+  if (absolute < 3_600_000) {
+    const minutes = Math.round(difference / 60_000)
+    return new Intl.RelativeTimeFormat('tr', { numeric: 'auto' }).format(minutes, 'minute')
+  }
+  if (absolute < 86_400_000) {
+    const hours = Math.round(difference / 3_600_000)
+    return new Intl.RelativeTimeFormat('tr', { numeric: 'auto' }).format(hours, 'hour')
+  }
+  return formatDate(value)
+}
+
+function formatTimeUntil(value: number): string {
+  const remaining = Math.max(0, value - Date.now())
+  if (remaining === 0) return 'Süre dolmak üzere'
+  const hours = Math.floor(remaining / 3_600_000)
+  const minutes = Math.floor((remaining % 3_600_000) / 60_000)
+  return `${hours} sa ${minutes} dk kaldı`
 }
