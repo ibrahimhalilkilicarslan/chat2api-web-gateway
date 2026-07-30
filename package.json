@@ -1,6 +1,6 @@
 {
   "name": "chat2api-web-gateway",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "description": "Hardened, web-only OpenAI-compatible gateway for isolated DeepSeek web accounts.",
   "type": "module",

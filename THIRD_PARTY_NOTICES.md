@@ -1,5 +1,15 @@
 # Third-Party Notices
 
+## Upstream project
+
+Chat2API DeepSeek Web Gateway is derived from
+[xiaoY233/Chat2API](https://github.com/xiaoY233/Chat2API), originally published
+by the Chat2API Team under GPL-3.0. This distribution preserves the upstream
+Git history, copyright notices, and GPL terms while substantially replacing the
+desktop and multi-provider runtime with a web-only, DeepSeek-focused gateway.
+
+## Runtime dependencies
+
 This project is distributed under GPL-3.0 and includes third-party production
 dependencies under compatible permissive licenses. The lockfile-reviewed
 production license groups are:

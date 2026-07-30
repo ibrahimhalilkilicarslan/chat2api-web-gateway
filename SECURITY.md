@@ -5,14 +5,14 @@
 Do not open a public issue containing credentials, cookies, API keys, provider
 payloads, prompts, completions, SQLite files, or deployment configuration.
 
-Before public release, configure a private security-reporting address or GitHub
-private vulnerability reporting and replace this paragraph with the verified
-contact method.
+Report vulnerabilities privately through
+[GitHub Security Advisories](https://github.com/ibrahimhalilkilicarslan/chat2api-web-gateway/security/advisories/new).
+Include the affected version, impact, safe reproduction steps, and a proposed
+fix when available. Do not attach live credentials or production databases.
 
 ## Supported versions
 
-Only the latest tagged release is intended to receive security fixes. This
-policy takes effect when the first public version is tagged.
+Only the latest tagged release is intended to receive security fixes.
 
 ## Security boundaries
 

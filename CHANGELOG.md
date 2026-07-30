@@ -2,12 +2,16 @@
 
 ## Unreleased
 
+## 2.2.0 - 2026-07-30
+
 ### Added
 
 - Cross-platform native Session Connector transport with independent,
   short-lived capabilities for Windows, macOS, and Linux
 - Admin onboarding copy and workflow for a portable connector using an isolated
   installed-browser profile
+- Public release documentation, synthetic product screenshots, and focused
+  GitHub issue forms
 
 ### Security
 
@@ -15,6 +19,7 @@
   replayed across transport endpoints
 - Native completion rejects browser origins, requires an explicit connector
   header, follows no CORS path, and preserves server-side credential validation
+- Git history and release assets are scanned for secrets before publication
 
 ## 2.1.0 - 2026-07-30
 

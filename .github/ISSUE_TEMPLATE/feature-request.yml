@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a focused improvement that preserves the gateway security boundary.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The project intentionally excludes arbitrary providers, official API
+        fallback, remote media, tool emulation, and persistent upstream
+        conversations. Explain how the proposal fits the documented boundary.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operational or compatibility problem needs to be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest safe behavior change.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and privacy impact
+      description: Address credentials, request content, logs, network access, and admin authorization.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

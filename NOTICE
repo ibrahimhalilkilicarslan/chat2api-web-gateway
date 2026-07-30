@@ -1,0 +1,12 @@
+Chat2API DeepSeek Web Gateway
+Copyright (C) 2026 Chat2API Team and contributors
+
+This project is distributed under the GNU General Public License version 3.
+
+It is derived from xiaoY233/Chat2API:
+https://github.com/xiaoY233/Chat2API
+
+The current distribution substantially replaces the desktop and multi-provider
+runtime with a web-only, DeepSeek-focused gateway. Preserve this notice, the
+GPL-3.0 license, the Git history, and THIRD_PARTY_NOTICES.md when redistributing
+the project.

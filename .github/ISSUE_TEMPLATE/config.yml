@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ibrahimhalilkilicarslan/chat2api-web-gateway/security/advisories/new
+    about: Report credentials exposure, authentication bypasses, SSRF, or other security issues privately.
+  - name: Session Connector
+    url: https://github.com/ibrahimhalilkilicarslan/chat2api-session-connector/issues
+    about: Report browser launch, local pairing, or connector packaging issues in the connector repository.
