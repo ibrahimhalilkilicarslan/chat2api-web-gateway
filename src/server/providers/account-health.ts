@@ -1,7 +1,10 @@
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
+import {
+  DEEPSEEK_CURRENT_USER_ENDPOINT,
+  DEEPSEEK_WEB_HEADERS,
+  inspectDeepSeekCurrentUser,
+} from '../../main/providers/deepseek-web.js'
 import type { Account, Provider } from '../../main/store/types.js'
-
-const DEEPSEEK_WEB_HEALTH_ENDPOINT = 'https://chat.deepseek.com/api/v0/users/current'
 
 export type AccountHealthStatus =
   | 'healthy'
@@ -23,19 +26,6 @@ type HealthHttpGet = (
   url: string,
   config: AxiosRequestConfig,
 ) => Promise<{ status: number; data?: unknown }>
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
-}
-
-function hasDeepSeekWebAccessToken(value: unknown): boolean {
-  const root = record(value)
-  const data = record(root?.data)
-  const bizData = record(data?.biz_data) ?? record(root?.biz_data)
-  return typeof bizData?.token === 'string' && bizData.token.length > 0
-}
 
 function result(
   startedAt: number,
@@ -84,19 +74,25 @@ export async function checkProviderAccount(
     if (provider.id === 'deepseek') {
       const token = account.credentials.token
       if (!token) return fromStatus(startedAt, 401)
-      const response = await httpGet(DEEPSEEK_WEB_HEALTH_ENDPOINT, {
+      const response = await httpGet(DEEPSEEK_CURRENT_USER_ENDPOINT, {
         headers: {
-          Accept: 'application/json',
           Authorization: `Bearer ${token}`,
-          Origin: 'https://chat.deepseek.com',
-          Referer: 'https://chat.deepseek.com/',
-          'User-Agent': 'Chat2API-Web-Gateway/2.0',
+          ...DEEPSEEK_WEB_HEADERS,
         },
         timeout: 10_000,
         validateStatus: () => true,
       })
       if (response.status !== 200) return fromStatus(startedAt, response.status)
-      if (!hasDeepSeekWebAccessToken(response.data)) return fromStatus(startedAt, 502)
+      const inspection = inspectDeepSeekCurrentUser(response.data)
+      if (inspection.kind === 'authentication_error') return fromStatus(startedAt, 401)
+      if (inspection.kind !== 'valid') {
+        return result(startedAt, {
+          healthy: false,
+          status: 'unavailable',
+          code: 'provider_protocol_changed',
+          message: 'Provider session response could not be verified.',
+        })
+      }
 
       return result(startedAt, {
         healthy: true,

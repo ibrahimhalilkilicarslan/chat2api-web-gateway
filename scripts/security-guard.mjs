@@ -90,6 +90,10 @@ const deepSeekAdapter = readFileSync(
   resolve(root, 'src/main/proxy/adapters/deepseek.ts'),
   'utf8',
 )
+const deepSeekWebProtocol = readFileSync(
+  resolve(root, 'src/main/providers/deepseek-web.ts'),
+  'utf8',
+)
 if (deepSeekAdapter.includes('console.')) {
   fail('DeepSeek adapter contains runtime console diagnostics')
 }
@@ -99,7 +103,12 @@ if (!deepSeekAdapter.includes("return provider.id === 'deepseek'")) {
 if (deepSeekAdapter.includes('sessionCache')) {
   fail('DeepSeek requests may reuse an upstream conversation session')
 }
-if (!deepSeekAdapter.includes("const DEEPSEEK_API_BASE = 'https://chat.deepseek.com/api'")) {
+if (
+  !deepSeekAdapter.includes('DEEPSEEK_WEB_API_BASE')
+  || !deepSeekWebProtocol.includes(
+    "export const DEEPSEEK_WEB_API_BASE = 'https://chat.deepseek.com/api'",
+  )
+) {
   fail('DeepSeek adapter no longer uses the fixed code-owned API base')
 }
 const storeTypes = readFileSync(resolve(root, 'src/main/store/types.ts'), 'utf8')

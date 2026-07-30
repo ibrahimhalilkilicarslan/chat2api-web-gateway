@@ -52,11 +52,14 @@ Connector**:
    remains the recovery path and is the current macOS flow.
 4. The connector launches an installed Chrome, Edge, Chromium, or Brave browser
    with a new temporary profile. The operator signs in on DeepSeek's own page.
-5. After login, the connector reads only DeepSeek's `userToken` value and posts
-   it to the exact, one-time native gateway endpoint.
+5. After login, the connector reads only DeepSeek's `userToken` value, verifies
+   it against DeepSeek's current-user endpoint inside the temporary browser,
+   and posts it to the exact, one-time native gateway endpoint.
 6. The temporary browser profile is destroyed when the operation ends.
-7. The server validates the capability and provider session before creating the
-   account. Invalid sessions are not persisted.
+7. The server validates the capability and provider session with the same web
+   protocol headers used by normal gateway traffic before creating the account.
+   Invalid sessions are not persisted, and authentication, throttling,
+   availability, and protocol-change failures remain distinguishable.
 
 The connector never attaches to the default browser profile. It does not read
 the account password, OTP value, cookie archive, browsing history, or unrelated

@@ -691,6 +691,12 @@ describe('gateway HTTP security contract', () => {
       }),
     })
     expect(rejected.statusCode).toBe(422)
+    expect(rejected.json()).toMatchObject({
+      error: {
+        code: 'credential_validation_failed',
+        details: { reason: 'provider_authentication_failed' },
+      },
+    })
     expect(storeManager.getAccounts()).toHaveLength(accountCount)
     expect(JSON.stringify(rejected.json())).not.toContain(invalidToken)
 

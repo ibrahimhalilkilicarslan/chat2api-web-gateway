@@ -48,9 +48,45 @@ describe('provider account health', () => {
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: 'Bearer web-session-token',
+          'X-Client-Platform': 'web',
+          'User-Agent': expect.stringContaining('Mozilla/5.0'),
         }),
       }),
     )
+  })
+
+  it('maps an authentication error embedded in an HTTP 200 response', async () => {
+    const health = await checkProviderAccount(
+      provider('deepseek'),
+      account('deepseek', { token: 'rejected-web-session-token' }),
+      async () => ({
+        status: 200,
+        data: { code: 40_003, msg: 'Authorization Failed', data: {} },
+      }),
+    )
+
+    expect(health).toMatchObject({
+      healthy: false,
+      status: 'authentication_error',
+      code: 'provider_authentication_failed',
+    })
+  })
+
+  it('reports a provider protocol change separately from invalid credentials', async () => {
+    const health = await checkProviderAccount(
+      provider('deepseek'),
+      account('deepseek', { token: 'web-session-token' }),
+      async () => ({
+        status: 200,
+        data: { code: 0, data: { biz_code: 0, biz_data: { id: 'user-id' } } },
+      }),
+    )
+
+    expect(health).toMatchObject({
+      healthy: false,
+      status: 'unavailable',
+      code: 'provider_protocol_changed',
+    })
   })
 
   it('maps provider throttling without exposing an upstream payload', async () => {

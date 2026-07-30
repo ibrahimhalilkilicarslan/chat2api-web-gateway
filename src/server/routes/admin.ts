@@ -523,7 +523,11 @@ export async function registerAdminRoutes(
         metadata: { healthCode: health.code, transport },
       })
       return reply.code(422).send({
-        error: { code: 'credential_validation_failed', message: health.message },
+        error: {
+          code: 'credential_validation_failed',
+          message: health.message,
+          details: { reason: health.code },
+        },
       })
     }
 

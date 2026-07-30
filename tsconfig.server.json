@@ -15,7 +15,7 @@
   "include": [
     "src/core/**/*.ts",
     "src/server/**/*.ts",
-    "src/main/providers/builtin/**/*.ts",
+    "src/main/providers/**/*.ts",
     "src/main/lib/**/*.ts",
     "src/main/proxy/**/*.ts",
     "src/main/store/store.ts",

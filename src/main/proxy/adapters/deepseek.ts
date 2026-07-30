@@ -5,34 +5,19 @@ import axios, {
   type AxiosResponse,
 } from 'axios'
 import { getDeepSeekHash } from '../../lib/challenge'
+import {
+  DEEPSEEK_WEB_API_BASE,
+  DEEPSEEK_WEB_HEADERS,
+  inspectDeepSeekCurrentUser,
+} from '../../providers/deepseek-web.js'
 import type { Account, Provider } from '../../store/types'
 import type { ChatMessage } from '../types'
 import { resolveDeepSeekChatOptions } from './providerModelOptions'
 
-const DEEPSEEK_API_BASE = 'https://chat.deepseek.com/api'
 const SESSION_CREATE_PATH = '/v0/chat_session/create'
 const SESSION_DELETE_PATH = '/v0/chat_session/delete'
 const CHAT_COMPLETION_PATH = '/v0/chat/completion'
 const CHALLENGE_PATH = '/v0/chat/create_pow_challenge'
-
-const WEB_HEADERS = {
-  Accept: '*/*',
-  'Accept-Encoding': 'gzip, deflate, br, zstd',
-  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-  Origin: 'https://chat.deepseek.com',
-  Referer: 'https://chat.deepseek.com/',
-  'Sec-Ch-Ua': '"Not/A)Brand";v="99", "Chromium";v="148"',
-  'Sec-Ch-Ua-Mobile': '?0',
-  'Sec-Ch-Ua-Platform': '"macOS"',
-  'Sec-Fetch-Dest': 'empty',
-  'Sec-Fetch-Mode': 'cors',
-  'Sec-Fetch-Site': 'same-origin',
-  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-  'X-App-Version': '2.0.0',
-  'X-Client-Locale': 'zh_CN',
-  'X-Client-Platform': 'web',
-  'X-Client-Version': '2.0.0',
-}
 
 interface DeepSeekHttpClient {
   get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>>
@@ -174,7 +159,7 @@ export class DeepSeekAdapter {
       const { modelType, searchEnabled, thinkingEnabled } = resolveDeepSeekChatOptions(request)
 
       const response = await this.http.post<NodeJS.ReadableStream>(
-        `${DEEPSEEK_API_BASE}${CHAT_COMPLETION_PATH}`,
+        `${DEEPSEEK_WEB_API_BASE}${CHAT_COMPLETION_PATH}`,
         {
           chat_session_id: sessionId,
           parent_message_id: null,
@@ -188,7 +173,7 @@ export class DeepSeekAdapter {
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            ...WEB_HEADERS,
+            ...DEEPSEEK_WEB_HEADERS,
             Referer: `https://chat.deepseek.com/a/chat/s/${sessionId}`,
             Cookie: generateCookie(),
             'X-Ds-Pow-Response': challengeAnswer,
@@ -211,12 +196,12 @@ export class DeepSeekAdapter {
     try {
       const token = await this.acquireToken()
       const result = await this.http.post(
-        `${DEEPSEEK_API_BASE}${SESSION_DELETE_PATH}`,
+        `${DEEPSEEK_WEB_API_BASE}${SESSION_DELETE_PATH}`,
         { chat_session_id: sessionId },
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            ...WEB_HEADERS,
+            ...DEEPSEEK_WEB_HEADERS,
           },
           timeout: 10_000,
           validateStatus: () => true,
@@ -246,10 +231,10 @@ export class DeepSeekAdapter {
 
     let result: AxiosResponse
     try {
-      result = await this.http.get(`${DEEPSEEK_API_BASE}/v0/users/current`, {
+      result = await this.http.get(`${DEEPSEEK_WEB_API_BASE}/v0/users/current`, {
         headers: {
           Authorization: `Bearer ${this.token}`,
-          ...WEB_HEADERS,
+          ...DEEPSEEK_WEB_HEADERS,
         },
         timeout: 15_000,
         signal,
@@ -281,14 +266,19 @@ export class DeepSeekAdapter {
       )
     }
 
-    const accessToken = providerData(result.data)?.token
-    if (typeof accessToken !== 'string' || accessToken.length === 0) {
+    const inspection = inspectDeepSeekCurrentUser(result.data)
+    if (inspection.kind !== 'valid') {
       throw new DeepSeekUpstreamError(
-        'provider_protocol_changed',
-        502,
-        'DeepSeek token response format changed.',
+        inspection.kind === 'authentication_error'
+          ? 'provider_authentication_failed'
+          : 'provider_protocol_changed',
+        inspection.kind === 'authentication_error' ? 401 : 502,
+        inspection.kind === 'authentication_error'
+          ? 'DeepSeek web token is invalid or expired.'
+          : 'DeepSeek token response format changed.',
       )
     }
+    const accessToken = inspection.accessToken
 
     tokenCache.set(cacheKey, {
       accessToken,
@@ -299,12 +289,12 @@ export class DeepSeekAdapter {
 
   private async createSession(token: string, signal?: AbortSignal): Promise<string> {
     const result = await this.http.post(
-      `${DEEPSEEK_API_BASE}${SESSION_CREATE_PATH}`,
+      `${DEEPSEEK_WEB_API_BASE}${SESSION_CREATE_PATH}`,
       {},
       {
         headers: {
           Authorization: `Bearer ${token}`,
-          ...WEB_HEADERS,
+          ...DEEPSEEK_WEB_HEADERS,
           Cookie: generateCookie(),
         },
         timeout: 15_000,
@@ -331,12 +321,12 @@ export class DeepSeekAdapter {
 
   private async getChallenge(token: string, signal?: AbortSignal): Promise<ChallengeResponse> {
     const result = await this.http.post(
-      `${DEEPSEEK_API_BASE}${CHALLENGE_PATH}`,
+      `${DEEPSEEK_WEB_API_BASE}${CHALLENGE_PATH}`,
       { target_path: '/api/v0/chat/completion' },
       {
         headers: {
           Authorization: `Bearer ${token}`,
-          ...WEB_HEADERS,
+          ...DEEPSEEK_WEB_HEADERS,
         },
         timeout: 15_000,
         signal,
