@@ -430,7 +430,11 @@ export function App() {
                     setError(null)
                     try {
                       const health = await testAccount(account.id)
-                      setNotice(`${account.name}: ${health.message} (${health.latencyMs} ms)`)
+                      if (health.healthy) {
+                        setNotice(`${account.name}: ${accountHealthMessage(health)} (${health.latencyMs} ms)`)
+                      } else {
+                        setError(`${account.name}: ${accountHealthMessage(health)}`)
+                      }
                       await refresh(true)
                     } catch (cause) {
                       setError(cause instanceof Error ? cause.message : 'Bağlantı testi tamamlanamadı.')
@@ -1007,7 +1011,9 @@ function ProvidersPage(props: {
                       )}
                       {account.errorMessage && (
                         <div className="inline-warning danger">
-                          <AlertTriangle size={15} /> {account.errorMessage}
+                          <AlertTriangle size={15} /> {account.health
+                            ? accountHealthMessage(account.health)
+                            : 'Bu hesabın oturumu doğrulanamadı. Bağlantıyı yeniden test edin.'}
                         </div>
                       )}
 
@@ -1988,7 +1994,7 @@ function AccountPanel(props: {
                       ? 'Mevcut token korunacak'
                       : 'Token bekleniyor'}</strong>
                     <small>{validation?.healthy
-                      ? `${validation.message} · ${validation.latencyMs} ms`
+                      ? `${accountHealthMessage(validation)} · ${validation.latencyMs} ms`
                       : validationError
                       ?? (isEditing && !hasCredentialUpdates
                         ? 'Tokenı değiştirmiyorsanız yeniden doğrulama gerekmez.'
@@ -2778,6 +2784,17 @@ function accountStatusLabel(account: Account): string {
   if (account.status === 'expired') return 'Süresi doldu'
   if (account.status === 'inactive') return 'Kapalı'
   return 'Kontrol bekliyor'
+}
+
+function accountHealthMessage(health: AccountHealthResult): string {
+  const labels: Record<AccountHealthResult['status'], string> = {
+    healthy: 'Oturum doğrulandı',
+    authentication_error: 'Oturum geçersiz veya süresi dolmuş',
+    rate_limited: 'DeepSeek istekleri geçici olarak sınırlıyor',
+    unavailable: 'DeepSeek bağlantısına ulaşılamıyor',
+    unsupported: 'DeepSeek bağlantı yöntemi değişmiş olabilir',
+  }
+  return labels[health.status]
 }
 
 function activityTone(status: RequestActivity['status']): 'success' | 'danger' | 'warning' {
