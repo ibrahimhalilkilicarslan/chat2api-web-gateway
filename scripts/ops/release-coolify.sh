@@ -26,10 +26,8 @@ for command_name in curl docker git jq pnpm; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "required command is unavailable: ${command_name}"
 done
 
-if (
-  [[ ! "${COOLIFY_URL}" =~ ^https://[^/?#]+$ ]]
-  && [[ ! "${COOLIFY_URL}" =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?$ ]]
-); then
+if [[ ! "${COOLIFY_URL}" =~ ^https://[^/?#]+$ ]] \
+  && [[ ! "${COOLIFY_URL}" =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?$ ]]; then
   fail 'COOLIFY_URL must be an HTTPS origin or an HTTP loopback origin'
 fi
 [[ "${COOLIFY_RESOURCE_UUID}" =~ ^[A-Za-z0-9_-]+$ ]] || fail 'Coolify resource UUID is invalid'
