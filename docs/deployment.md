@@ -66,6 +66,10 @@ CHAT2API_COMPOSE_PROJECT="<compose-project>" \
 scripts/ops/release-coolify.sh
 ```
 
+When the release runs on the Coolify host itself, `COOLIFY_URL` may use the
+loopback API origin, for example `http://127.0.0.1:8000`. Plain HTTP is rejected
+for every non-loopback host.
+
 It requires a clean commit equal to `origin/main`, runs the complete quality
 gate, immutable local image smoke, verified backup, Coolify deployment, new
 container health, and remote smoke. If deployment fails, select the recorded
