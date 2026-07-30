@@ -489,7 +489,7 @@ export function App() {
                   )}
                   onExportAudit={() => run(
                     downloadAuditCsv,
-                    'Audit CSV indirildi.',
+                    'Denetim CSV dosyası indirildi.',
                   )}
                 />
               )}
@@ -758,7 +758,7 @@ function OverviewPage({
     },
     {
       label: 'Bağlantı kontrolü',
-      detail: 'Aktif hesabın credential testi',
+      detail: 'Aktif hesabın oturum doğrulaması',
       complete: data.accounts.some((account) => account.health?.healthy),
       action: () => onNavigate('providers'),
       actionLabel: 'Kontrol et',
@@ -1361,7 +1361,7 @@ function SecurityPage({
       <PageIntro
         eyebrow="Güvenlik durumu"
         title="Çalışma sınırları açık ve denetlenebilir"
-        description="Runtime politikaları, yönlendirme stratejisi ve yönetici işlemleri tek ekranda."
+        description="Çalışma politikaları, yönlendirme stratejisi ve yönetici işlemleri tek ekranda."
       />
       <div className="security-overview">
         <section className="security-score-card">
@@ -1405,7 +1405,7 @@ function SecurityPage({
         </section>
 
         <section className="panel">
-          <PanelHeader title="Runtime sınırları" subtitle="Deploy sırasında kilitlenen güvenlik politikaları" />
+          <PanelHeader title="Çalışma sınırları" subtitle="Yayına alım sırasında kilitlenen güvenlik politikaları" />
           <div className="security-check-grid">
             {securityChecks.map(([label, value]) => (
               <div key={label}>
@@ -1415,10 +1415,10 @@ function SecurityPage({
             ))}
           </div>
           <div className="runtime-facts">
-            <div><span>Request timeout</span><strong>{formatDuration(settings.requestTimeout)}</strong></div>
-            <div><span>Stream idle</span><strong>{formatDuration(settings.streamIdleTimeout)}</strong></div>
+            <div><span>İstek zaman aşımı</span><strong>{formatDuration(settings.requestTimeout)}</strong></div>
+            <div><span>Akış boşta kalma</span><strong>{formatDuration(settings.streamIdleTimeout)}</strong></div>
             <div><span>Sağlık kontrolü</span><strong>{settings.accountHealthInterval > 0 ? formatDuration(settings.accountHealthInterval) : 'Kapalı'}</strong></div>
-            <div><span>İstek kapsamı</span><strong>{settings.security.supportedInput}</strong></div>
+            <div><span>İstek kapsamı</span><strong>{settings.security.supportedInput === 'text-only' ? 'Yalnız metin' : settings.security.supportedInput}</strong></div>
           </div>
         </section>
       </div>
@@ -1429,7 +1429,7 @@ function SecurityPage({
           subtitle="Veri içeriğini açmadan bütünlük ve depolama sağlığı"
           action={(
             <StatusBadge status={maintenance.integrity === 'ok' ? 'success' : 'danger'}>
-              {maintenance.integrity === 'ok' ? 'Integrity OK' : 'Kontrol gerekli'}
+              {maintenance.integrity === 'ok' ? 'Bütünlük normal' : 'Kontrol gerekli'}
             </StatusBadge>
           )}
         />
@@ -1440,13 +1440,13 @@ function SecurityPage({
           <div><ShieldCheck size={18} /><span><small>Journal modu</small><strong>{maintenance.journalMode.toUpperCase()}</strong></span></div>
         </div>
         <p className="maintenance-note">
-          {formatNumber(maintenance.pageCount)} sayfa · {formatNumber(maintenance.freelistCount)} boş sayfa · bütünlük son kontrolü {formatRelativeTime(maintenance.integrityCheckedAt)} · içerik ve credential değerleri bu ekrana taşınmaz.
+          {formatNumber(maintenance.pageCount)} sayfa · {formatNumber(maintenance.freelistCount)} boş sayfa · bütünlük son kontrolü {formatRelativeTime(maintenance.integrityCheckedAt)} · içerik ve oturum değerleri bu ekrana taşınmaz.
         </p>
       </section>
 
       <section className="panel audit-panel">
         <PanelHeader
-          title="Yönetim audit günlüğü"
+          title="Yönetim denetim günlüğü"
           subtitle={`${filteredAudit.length} kayıt · hassas değer içermeyen işlem izi`}
           action={(
             <button className="secondary-button compact" onClick={onExportAudit}>
@@ -1464,7 +1464,7 @@ function SecurityPage({
                 setAuditLimit(10)
               }}
               placeholder="İşlem, aktör veya hedef ara"
-              aria-label="Audit kayıtlarında ara"
+              aria-label="Denetim kayıtlarında ara"
             />
           </label>
           <SegmentedControl
@@ -1499,7 +1499,7 @@ function SecurityPage({
           {filteredAudit.length === 0 && (
             <div className="empty-state compact-empty">
               <ShieldCheck size={23} />
-              <strong>{audit.length === 0 ? 'Henüz audit kaydı yok' : 'Filtreyle eşleşen kayıt yok'}</strong>
+              <strong>{audit.length === 0 ? 'Henüz denetim kaydı yok' : 'Filtreyle eşleşen kayıt yok'}</strong>
             </div>
           )}
         </div>
@@ -1514,7 +1514,7 @@ function SecurityPage({
 
       <div className="risk-note wide">
         <AlertTriangle size={19} />
-        <p><strong>Web oturumu sınırı</strong> DeepSeek web protokolü resmi API değildir ve haber vermeden değişebilir. Ayrı bir hesap kullanın, credential sağlık kontrollerini izleyin ve bu gateway’i kritik tek sağlayıcı olarak konumlandırmayın.</p>
+        <p><strong>Web oturumu sınırı</strong> DeepSeek web protokolü resmi API değildir ve haber vermeden değişebilir. Ayrı bir hesap kullanın, oturum sağlık kontrollerini izleyin ve bu gateway’i kritik tek sağlayıcı olarak konumlandırmayın.</p>
       </div>
     </>
   )
@@ -1919,7 +1919,7 @@ function AccountPanel(props: {
             <div className="form-section">
               <div className="form-section-head"><span>{isEditing ? '02' : '03'}</span><div><strong>Web oturumu</strong><small>Token yalnız şifreli kasaya kaydedilir ve tekrar gösterilmez</small></div></div>
               <div className="credential-box">
-                <div><LockKeyhole size={16} /><span>AES-256-GCM encrypted storage</span></div>
+                <div><LockKeyhole size={16} /><span>AES-256-GCM ile şifreli saklama</span></div>
                 {props.provider.credentialFields.map((field) => (
                   <Field key={field.name} label={`${field.label}${field.required ? ' *' : ''}`} hint={field.helpText}>
                     {field.type === 'textarea' ? (
@@ -1992,7 +1992,7 @@ function AccountPanel(props: {
                       : validationError
                       ?? (isEditing && !hasCredentialUpdates
                         ? 'Tokenı değiştirmiyorsanız yeniden doğrulama gerekmez.'
-                        : 'Kayıttan önce yalnız credential sağlık kontrolü yapılır.')}</small>
+                        : 'Kayıttan önce yalnız oturum sağlık kontrolü yapılır.')}</small>
                   </div>
                 </div>
                 {hasCredentialUpdates && (
@@ -2661,8 +2661,8 @@ function deriveGatewayState(data: DashboardData | null) {
       label: 'DeepSeek hız sınırı',
       headline: 'DeepSeek yeni istekleri geçici olarak sınırlıyor.',
       description: readiness.retryAt
-        ? `Credential geçerli; trafik devre kesici tarafından korunuyor. Yeniden deneme ${formatRelativeTime(readiness.retryAt)} mümkün olacak.`
-        : 'Credential geçerli; gerçek üretim çağrıları geçici olarak sınırlandırılıyor. Aktivite kayıtlarından sağlayıcı durumunu izleyin.',
+        ? `Oturum geçerli; trafik devre kesici tarafından korunuyor. Yeniden deneme ${formatRelativeTime(readiness.retryAt)} mümkün olacak.`
+        : 'Oturum geçerli; gerçek üretim çağrıları geçici olarak sınırlandırılıyor. Aktivite kayıtlarından sağlayıcı durumunu izleyin.',
       actionView: 'activity' as View,
       actionLabel: 'Aktiviteyi incele',
     }
@@ -2684,13 +2684,13 @@ function deriveGatewayState(data: DashboardData | null) {
       shortLabel: 'Kontrol bekliyor',
       label: readiness.reasonCode === 'no_successful_request'
         ? 'Trafik doğrulaması'
-        : 'Credential doğrulaması',
+        : 'Oturum doğrulaması',
       headline: readiness.reasonCode === 'no_successful_request'
         ? 'Oturum geçerli; ilk gerçek gateway isteği bekleniyor.'
         : 'Gateway hazır; hesap sağlığını doğrulayın.',
       description: readiness.reasonCode === 'no_successful_request'
         ? 'Sağlık kontrolü yalnız oturumu doğrular. Operasyonel hazır durumu için istemci anahtarıyla başarılı bir metin isteği tamamlayın.'
-        : 'Aktif oturum mevcut ancak son credential sağlık kontrolü henüz tamamlanmamış.',
+        : 'Aktif oturum mevcut ancak son oturum sağlık kontrolü henüz tamamlanmamış.',
       actionView: readiness.reasonCode === 'no_successful_request' ? 'keys' as View : 'providers' as View,
       actionLabel: readiness.reasonCode === 'no_successful_request' ? 'Bağlantıyı kur' : 'Bağlantıyı test et',
     }
@@ -2710,7 +2710,7 @@ function readinessReasonLabel(reason: DashboardData['overview']['gateway']['read
   const labels = {
     ready: 'Gerçek trafik doğrulandı',
     no_active_account: 'Aktif DeepSeek hesabı gerekli',
-    credential_check_required: 'Credential kontrolü gerekli',
+    credential_check_required: 'Oturum kontrolü gerekli',
     no_successful_request: 'İlk başarılı istek bekleniyor',
     provider_rate_limited: 'DeepSeek istekleri geçici olarak sınırlıyor',
     provider_authentication_failed: 'Oturum tokenı geçersiz veya süresi dolmuş',
@@ -2735,7 +2735,7 @@ function readinessDescription(reason: DashboardData['overview']['gateway']['read
     return 'Şifreli oturum tokenını güncelleyin ve kaydetmeden önce bağlantı doğrulamasını tamamlayın.'
   }
   if (reason === 'provider_protocol_changed') {
-    return 'Credential sağlıklı görünse bile gerçek istek başarısız oldu. Provider adaptörünü ve son aktivite kodunu inceleyin.'
+    return 'Oturum sağlıklı görünse bile gerçek istek başarısız oldu. Sağlayıcı adaptörünü ve son aktivite kodunu inceleyin.'
   }
   if (reason === 'no_available_account') {
     return 'Hesap durumu, günlük kota ve devre kesici bilgilerini birlikte kontrol edin.'
@@ -2805,11 +2805,11 @@ function auditActionLabel(action: string): string {
   const labels: Record<string, string> = {
     'admin.login': 'Yönetici oturumu',
     'admin.logout': 'Oturum kapatıldı',
-    'account.create': 'Provider hesabı eklendi',
-    'account.update': 'Provider hesabı güncellendi',
-    'account.delete': 'Provider hesabı silindi',
-    'account.health_check': 'Credential sağlık kontrolü',
-    'account.credentials.validate': 'Kaydetmeden önce credential doğrulaması',
+    'account.create': 'Sağlayıcı hesabı eklendi',
+    'account.update': 'Sağlayıcı hesabı güncellendi',
+    'account.delete': 'Sağlayıcı hesabı silindi',
+    'account.health_check': 'Oturum sağlık kontrolü',
+    'account.credentials.validate': 'Kaydetmeden önce oturum doğrulaması',
     'api_key.create': 'API anahtarı oluşturuldu',
     'api_key.rotate': 'API anahtarı döndürüldü',
     'api_key.update': 'API anahtarı güncellendi',
