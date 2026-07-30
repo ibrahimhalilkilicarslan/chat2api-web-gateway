@@ -12,6 +12,7 @@ import {
 } from '../providers/account-health.js'
 import { accountHealthRegistry } from '../providers/account-health-registry.js'
 import type { AdminAuth } from '../security/admin-auth.js'
+import { isValidIpOrCidr } from '../security/ip-allowlist.js'
 
 const loginSchema = z.object({
   token: z.string().min(1).max(512),
@@ -42,6 +43,17 @@ const supportedModelIds = new Set(
   BUILTIN_PROVIDERS.flatMap((provider) => provider.supportedModels ?? []),
 )
 
+const expirationSchema = z.number()
+  .int()
+  .refine((value) => value > Date.now() + 60_000, 'Expiration must be in the future.')
+  .refine((value) => value <= Date.now() + 2 * 365 * 24 * 60 * 60_000, 'Expiration is too far in the future.')
+
+const allowedCidrsSchema = z.array(
+  z.string().trim().min(1).max(128).refine(isValidIpOrCidr, 'Invalid IP or CIDR policy.'),
+)
+  .max(64)
+  .refine((entries) => new Set(entries).size === entries.length, 'Duplicate IP policy.')
+
 const apiKeyCreateSchema = z.object({
   name: z.string().trim().min(1).max(120).refine(
     (value) => value.toLowerCase() !== 'bootstrap key',
@@ -57,10 +69,25 @@ const apiKeyCreateSchema = z.object({
     .default([]),
   requestsPerMinute: z.number().int().min(1).max(100_000),
   dailyQuota: z.number().int().min(1).max(10_000_000),
+  expiresAt: expirationSchema.optional(),
+  allowedCidrs: allowedCidrsSchema.default([]),
 }).strict()
 
 const apiKeyUpdateSchema = z.object({
-  enabled: z.boolean(),
+  enabled: z.boolean().optional(),
+  modelAllowlist: z.array(z.string().min(1).max(256))
+    .max(200)
+    .refine((models) => models.every((model) => supportedModelIds.has(model)))
+    .optional(),
+  requestsPerMinute: z.number().int().min(1).max(100_000).optional(),
+  dailyQuota: z.number().int().min(1).max(10_000_000).optional(),
+  expiresAt: expirationSchema.nullable().optional(),
+  allowedCidrs: allowedCidrsSchema.optional(),
+}).strict().refine((input) => Object.keys(input).length > 0)
+
+const apiKeyRotateSchema = z.object({
+  gracePeriodMinutes: z.number().int().min(0).max(7 * 24 * 60).default(60),
+  expiresAt: expirationSchema.optional(),
 }).strict()
 
 const settingsSchema = z.object({
@@ -181,6 +208,7 @@ export async function registerAdminRoutes(
     const providers = storeManager.getProviders()
     const statistics = storeManager.getStatistics()
     const today = storeManager.getTodayStatistics()
+    const operational = storeManager.getOperationalMetrics()
     const successRate = statistics.totalRequests > 0
       ? statistics.successRequests / statistics.totalRequests
       : 1
@@ -201,6 +229,13 @@ export async function registerAdminRoutes(
         averageLatency: statistics.totalRequests > 0
           ? Math.round(statistics.totalLatency / statistics.totalRequests)
           : 0,
+        latencyP50: operational.latency.p50,
+        latencyP95: operational.latency.p95,
+        maximumLatency: operational.latency.maximum,
+        errorsByCode: operational.errorsByCode,
+        usageByAccount: operational.usageByAccount,
+        usageByModel: operational.usageByModel,
+        hourly: operational.hourly,
       },
       gateway: {
         active: concurrency.getActive(),
@@ -413,7 +448,15 @@ export async function registerAdminRoutes(
     if (!id.success || !body.success) {
       return reply.code(400).send({ error: { code: 'invalid_request', message: 'Invalid API key update.' } })
     }
-    if (!storeManager.setApiKeyEnabled(id.data, body.data.enabled)) {
+    const updates = {
+      ...(body.data.enabled === undefined ? {} : { enabled: body.data.enabled }),
+      ...(body.data.modelAllowlist === undefined ? {} : { modelAllowlist: body.data.modelAllowlist }),
+      ...(body.data.requestsPerMinute === undefined ? {} : { requestsPerMinute: body.data.requestsPerMinute }),
+      ...(body.data.dailyQuota === undefined ? {} : { dailyQuota: body.data.dailyQuota }),
+      ...(body.data.allowedCidrs === undefined ? {} : { allowedCidrs: body.data.allowedCidrs }),
+      ...(Object.hasOwn(body.data, 'expiresAt') ? { expiresAt: body.data.expiresAt ?? undefined } : {}),
+    }
+    if (!storeManager.updateApiKey(id.data, updates)) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'API key not found.' } })
     }
     storeManager.addAuditLog({
@@ -422,9 +465,39 @@ export async function registerAdminRoutes(
       targetType: 'api_key',
       targetId: id.data,
       outcome: 'success',
-      metadata: { enabled: body.data.enabled },
+      metadata: {
+        ...(body.data.enabled === undefined ? {} : { enabled: body.data.enabled }),
+      },
     })
-    return reply.send({ id: id.data, enabled: body.data.enabled })
+    const updated = storeManager.getPublicApiKeyById(id.data)
+    if (!updated) return reply.code(404).send({ error: { code: 'not_found', message: 'API key not found.' } })
+    return reply.send(updated)
+  })
+
+  app.post('/admin/api/api-keys/:id/rotate', { preHandler: adminAuth.requireMutation }, async (request, reply) => {
+    const id = z.string().uuid().safeParse((request.params as { id?: unknown }).id)
+    const body = apiKeyRotateSchema.safeParse(request.body)
+    if (!id.success || !body.success) {
+      return reply.code(400).send({ error: { code: 'invalid_request', message: 'Invalid API key rotation.' } })
+    }
+    const created = storeManager.rotateApiKey(
+      id.data,
+      body.data.gracePeriodMinutes,
+      body.data.expiresAt,
+    )
+    if (!created) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'API key not found.' } })
+    }
+    registerSecret(created.rawKey)
+    storeManager.addAuditLog({
+      actor: 'admin',
+      action: 'api_key.rotate',
+      targetType: 'api_key',
+      targetId: id.data,
+      outcome: 'success',
+      metadata: { count: body.data.gracePeriodMinutes },
+    })
+    return reply.code(201).send(created)
   })
 
   app.delete('/admin/api/api-keys/:id', { preHandler: adminAuth.requireMutation }, async (request, reply) => {
@@ -458,6 +531,32 @@ export async function registerAdminRoutes(
       (request.query as { limit?: unknown }).limit,
     )
     return reply.send(storeManager.listAuditLogs(limit))
+  })
+
+  app.get('/admin/api/audit/export.csv', { preHandler: adminAuth.requireSession }, async (_request, reply) => {
+    const rows = storeManager.listAuditLogs(2000)
+    const columns = ['timestamp', 'actor', 'action', 'targetType', 'targetId', 'outcome', 'metadata']
+    const csv = [
+      columns.join(','),
+      ...rows.map((entry) => [
+        new Date(entry.timestamp).toISOString(),
+        entry.actor,
+        entry.action,
+        entry.targetType ?? '',
+        entry.targetId ?? '',
+        entry.outcome,
+        JSON.stringify(entry.metadata),
+      ].map(csvCell).join(',')),
+    ].join('\n')
+    return reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="chat2api-audit-${new Date().toISOString().slice(0, 10)}.csv"`)
+      .header('Cache-Control', 'no-store')
+      .send(`\uFEFF${csv}\n`)
+  })
+
+  app.get('/admin/api/maintenance', { preHandler: adminAuth.requireSession }, async (_request, reply) => {
+    return reply.send(storeManager.getMaintenanceStatus())
   })
 
   app.get('/admin/api/settings', { preHandler: adminAuth.requireSession }, async (_request, reply) => {
@@ -502,4 +601,9 @@ export async function registerAdminRoutes(
       accountHealthInterval: config.accountHealthIntervalMs,
     })
   })
+}
+
+function csvCell(value: string): string {
+  const spreadsheetSafe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value
+  return `"${spreadsheetSafe.replaceAll('"', '""')}"`
 }

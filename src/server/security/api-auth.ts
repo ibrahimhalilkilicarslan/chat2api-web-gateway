@@ -1,6 +1,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { ApiScope } from '../../main/store/store.js'
 import { storeManager } from '../../main/store/store.js'
+import { isIpAllowed } from './ip-allowlist.js'
 import { SlidingWindowRateLimiter } from './rate-limiter.js'
 
 const limiter = new SlidingWindowRateLimiter()
@@ -31,7 +32,11 @@ export function requireApiScope(scope: ApiScope) {
     }
 
     const record = storeManager.findApiKey(rawKey)
-    if (!record || !record.scopes.includes(scope)) {
+    if (
+      !record
+      || !record.scopes.includes(scope)
+      || !isIpAllowed(request.ip, record.allowedCidrs)
+    ) {
       unauthorized(reply)
       return
     }

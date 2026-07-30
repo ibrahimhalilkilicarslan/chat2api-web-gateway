@@ -30,6 +30,7 @@ const config: RuntimeConfig = {
   adminToken,
   sessionSecret: 'session-secret-that-is-at-least-thirty-two-characters',
   adminOrigins: [origin],
+  adminHosts: [],
   maxBodyBytes: 2 * 1024 * 1024,
   globalConcurrency: 5,
   accountConcurrency: 1,
@@ -252,6 +253,101 @@ describe('gateway HTTP security contract', () => {
     const serialized = JSON.stringify(listed.json())
     expect(serialized).not.toContain(body.rawKey)
     expect(serialized).not.toContain('keyHash')
+  })
+
+  it('enforces API key IP policy, expiry and zero-grace rotation', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/admin/api/api-keys',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        name: 'Restricted integration client',
+        scopes: ['chat', 'models'],
+        modelAllowlist: ['deepseek-v4-flash'],
+        requestsPerMinute: 10,
+        dailyQuota: 100,
+        allowedCidrs: ['203.0.113.0/24'],
+        expiresAt: Date.now() + 60 * 60_000,
+      },
+    })
+    const body = created.json<{ rawKey: string; record: { id: string } }>()
+    expect(created.statusCode).toBe(201)
+
+    const denied = await app.inject({
+      method: 'GET',
+      url: '/v1/models',
+      remoteAddress: '198.51.100.10',
+      headers: { authorization: `Bearer ${body.rawKey}` },
+    })
+    const allowed = await app.inject({
+      method: 'GET',
+      url: '/v1/models',
+      remoteAddress: '203.0.113.10',
+      headers: { authorization: `Bearer ${body.rawKey}` },
+    })
+    expect(denied.statusCode).toBe(401)
+    expect(allowed.statusCode).toBe(200)
+
+    const rotated = await app.inject({
+      method: 'POST',
+      url: `/admin/api/api-keys/${body.record.id}/rotate`,
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        gracePeriodMinutes: 0,
+        expiresAt: Date.now() + 2 * 60 * 60_000,
+      },
+    })
+    const rotatedBody = rotated.json<{ rawKey: string }>()
+    expect(rotated.statusCode).toBe(201)
+    expect(rotatedBody.rawKey).toMatch(/^c2a_/)
+
+    const oldKey = await app.inject({
+      method: 'GET',
+      url: '/v1/models',
+      remoteAddress: '203.0.113.10',
+      headers: { authorization: `Bearer ${body.rawKey}` },
+    })
+    const newKey = await app.inject({
+      method: 'GET',
+      url: '/v1/models',
+      remoteAddress: '203.0.113.10',
+      headers: { authorization: `Bearer ${rotatedBody.rawKey}` },
+    })
+    expect(oldKey.statusCode).toBe(401)
+    expect(newKey.statusCode).toBe(200)
+  })
+
+  it('exposes metadata-only maintenance and CSV audit exports', async () => {
+    storeManager.addAuditLog({
+      actor: '=HYPERLINK("https://untrusted.invalid")',
+      action: 'gateway.settings.update',
+      targetType: 'settings',
+      outcome: 'success',
+      metadata: {},
+    })
+    const maintenance = await app.inject({
+      method: 'GET',
+      url: '/admin/api/maintenance',
+      headers: { cookie: cookies },
+    })
+    expect(maintenance.statusCode).toBe(200)
+    expect(maintenance.json()).toMatchObject({
+      integrity: 'ok',
+      schemaVersion: 2,
+      journalMode: 'memory',
+    })
+    expect(JSON.stringify(maintenance.json())).not.toContain('databasePath')
+
+    const audit = await app.inject({
+      method: 'GET',
+      url: '/admin/api/audit/export.csv',
+      headers: { cookie: cookies },
+    })
+    expect(audit.statusCode).toBe(200)
+    expect(audit.headers['content-type']).toContain('text/csv')
+    expect(audit.body).toContain('"admin"')
+    expect(audit.body).toContain(`"'=HYPERLINK`)
+    expect(audit.body).not.toContain('provider-token-that-must-remain-private')
   })
 
   it('tests provider credentials without returning or auditing the secret', async () => {

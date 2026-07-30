@@ -108,6 +108,72 @@ describe('encrypted gateway store', () => {
     expect(store.deleteApiKey(bootstrap!.id)).toBe(false)
   })
 
+  it('enforces API key expiry, CIDR policy persistence and grace rotation', () => {
+    const created = store.createApiKey({
+      name: 'Restricted client',
+      scopes: ['chat', 'models'],
+      requestsPerMinute: 12,
+      dailyQuota: 120,
+      allowedCidrs: ['203.0.113.0/24'],
+      expiresAt: Date.now() + 60 * 60_000,
+    })
+
+    expect(store.findApiKey(created.rawKey)).toMatchObject({
+      allowedCidrs: ['203.0.113.0/24'],
+      expiresAt: expect.any(Number),
+    })
+
+    const rotated = store.rotateApiKey(created.record.id, 0, Date.now() + 2 * 60 * 60_000)
+    expect(rotated?.rawKey).toMatch(/^c2a_/)
+    expect(store.findApiKey(created.rawKey)).toBeUndefined()
+    expect(store.findApiKey(rotated!.rawKey)).toMatchObject({
+      rotatedFromId: created.record.id,
+      allowedCidrs: ['203.0.113.0/24'],
+      requestsPerMinute: 12,
+    })
+    expect(store.getApiKeyById(created.record.id)?.replacedById).toBe(rotated?.record.id)
+  })
+
+  it('computes operational percentiles without storing request bodies', () => {
+    for (const [index, latency] of [10, 20, 30, 40, 100].entries()) {
+      const log = store.startRequestLog({
+        requestId: randomUUID(),
+        method: 'POST',
+        url: '/v1/chat/completions',
+        model: 'deepseek-v4-flash',
+        accountId: 'account-a',
+        isStream: index % 2 === 0,
+      })
+      store.finishRequestLog(log.id, {
+        status: index === 4 ? 'error' : 'success',
+        statusCode: index === 4 ? 502 : 200,
+        latency,
+        errorCode: index === 4 ? 'provider_unavailable' : undefined,
+      })
+    }
+
+    expect(store.getOperationalMetrics()).toMatchObject({
+      sampleSize: 5,
+      latency: {
+        average: 40,
+        p50: 30,
+        p95: 100,
+        maximum: 100,
+      },
+      status: {
+        success: 4,
+        error: 1,
+        pending: 0,
+      },
+      errorsByCode: [{ code: 'provider_unavailable', count: 1 }],
+      usageByAccount: [{ accountId: 'account-a', count: 5 }],
+    })
+    expect(store.getMaintenanceStatus()).toMatchObject({
+      integrity: 'ok',
+      schemaVersion: 2,
+    })
+  })
+
   it('persists request metadata without prompt or response bodies', () => {
     const log = store.startRequestLog({
       requestId: randomUUID(),

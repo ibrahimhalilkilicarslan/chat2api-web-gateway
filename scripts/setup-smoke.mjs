@@ -46,6 +46,7 @@ try {
     ?.slice('CHAT2API_ADMIN_TOKEN='.length)
   assert.ok(token && token.length >= 32)
   assert.ok(!setup.stdout.includes(token), 'setup output leaked the generated admin token')
+  assert.match(environment, /^CHAT2API_ADMIN_HOSTS=localhost$/m)
 
   const doctor = run('doctor.mjs', ['--skip-docker'])
   assert.equal(doctor.status, 0, doctor.stderr)

@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { CredentialVault, constantTimeEqual, generateApiKey, hashSecret, secretPrefix } from '../../core/security/crypto.js'
 import { redactText, registerSecret } from '../../core/security/redaction.js'
-import { GatewayDatabase } from '../../core/storage/database.js'
+import {
+  type DatabaseMaintenanceStatus,
+  GatewayDatabase,
+} from '../../core/storage/database.js'
 import {
   type Account,
   type AppConfig,
@@ -37,6 +40,10 @@ export interface StoredApiKey {
   usageCount: number
   createdAt: number
   lastUsedAt?: number
+  expiresAt?: number
+  allowedCidrs: string[]
+  rotatedFromId?: string
+  replacedById?: string
 }
 
 export interface CreateApiKeyInput {
@@ -45,6 +52,9 @@ export interface CreateApiKeyInput {
   modelAllowlist?: string[]
   requestsPerMinute: number
   dailyQuota: number
+  expiresAt?: number
+  allowedCidrs?: string[]
+  rotatedFromId?: string
 }
 
 export interface CreatedApiKey {
@@ -80,6 +90,25 @@ export interface AuditLog {
   targetId?: string
   outcome: 'success' | 'failure'
   metadata: Record<string, string | number | boolean>
+}
+
+export interface OperationalMetrics {
+  sampleSize: number
+  latency: {
+    average: number
+    p50: number
+    p95: number
+    maximum: number
+  }
+  status: {
+    success: number
+    error: number
+    pending: number
+  }
+  errorsByCode: Array<{ code: string; count: number }>
+  usageByAccount: Array<{ accountId: string; count: number }>
+  usageByModel: Array<{ model: string; count: number }>
+  hourly: Array<{ hour: number; total: number; success: number; error: number }>
 }
 
 type ProviderRow = {
@@ -119,6 +148,10 @@ type ApiKeyRow = {
   usage_count: number
   created_at: number
   last_used_at: number | null
+  expires_at: number | null
+  allowed_cidrs_json: string
+  rotated_from_id: string | null
+  replaced_by_id: string | null
 }
 
 type SettingRow = {
@@ -396,8 +429,9 @@ export class StoreManager {
       this.requireConnection().prepare(`
         INSERT INTO api_keys(
           id, name, key_hash, key_prefix, scopes_json, model_allowlist_json,
-          requests_per_minute, daily_quota, enabled, usage_count, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
+          requests_per_minute, daily_quota, enabled, usage_count, created_at,
+          expires_at, allowed_cidrs_json, rotated_from_id, replaced_by_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, NULL, '[]', NULL, NULL)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           key_hash = excluded.key_hash,
@@ -406,7 +440,11 @@ export class StoreManager {
           model_allowlist_json = excluded.model_allowlist_json,
           requests_per_minute = excluded.requests_per_minute,
           daily_quota = excluded.daily_quota,
-          enabled = 1
+          enabled = 1,
+          expires_at = NULL,
+          allowed_cidrs_json = '[]',
+          rotated_from_id = NULL,
+          replaced_by_id = NULL
       `).run(
         ENVIRONMENT_API_KEY_ID,
         'Bootstrap key',
@@ -437,6 +475,9 @@ export class StoreManager {
       managedByEnvironment: false,
       usageCount: 0,
       createdAt: now,
+      expiresAt: input.expiresAt,
+      allowedCidrs: input.allowedCidrs ?? [],
+      rotatedFromId: input.rotatedFromId,
     }
     this.insertApiKey(record)
     return {
@@ -458,14 +499,92 @@ export class StoreManager {
       .prepare('SELECT * FROM api_keys WHERE key_hash = ? AND enabled = 1')
       .get(digest) as ApiKeyRow | undefined
     if (!row || !constantTimeEqual(digest, row.key_hash)) return undefined
-    return this.apiKeyFromRow(row)
+    const record = this.apiKeyFromRow(row)
+    if (record.expiresAt && record.expiresAt <= Date.now()) return undefined
+    return record
+  }
+
+  getApiKeyById(id: string): StoredApiKey | undefined {
+    const row = this.requireConnection()
+      .prepare('SELECT * FROM api_keys WHERE id = ?')
+      .get(id) as ApiKeyRow | undefined
+    return row ? this.apiKeyFromRow(row) : undefined
+  }
+
+  getPublicApiKeyById(id: string): Omit<StoredApiKey, 'keyHash'> | undefined {
+    const record = this.getApiKeyById(id)
+    return record ? this.publicApiKey(record) : undefined
+  }
+
+  updateApiKey(
+    id: string,
+    updates: Partial<Pick<
+      StoredApiKey,
+      'enabled' | 'requestsPerMinute' | 'dailyQuota' | 'modelAllowlist' | 'expiresAt' | 'allowedCidrs'
+    >>,
+  ): boolean {
+    if (id === ENVIRONMENT_API_KEY_ID) return false
+    const current = this.getApiKeyById(id)
+    if (!current) return false
+    const next = {
+      enabled: updates.enabled ?? current.enabled,
+      requestsPerMinute: updates.requestsPerMinute ?? current.requestsPerMinute,
+      dailyQuota: updates.dailyQuota ?? current.dailyQuota,
+      modelAllowlist: updates.modelAllowlist ?? current.modelAllowlist,
+      expiresAt: Object.hasOwn(updates, 'expiresAt') ? updates.expiresAt : current.expiresAt,
+      allowedCidrs: updates.allowedCidrs ?? current.allowedCidrs,
+    }
+    return this.requireConnection().prepare(`
+      UPDATE api_keys
+      SET enabled = ?, requests_per_minute = ?, daily_quota = ?,
+          model_allowlist_json = ?, expires_at = ?, allowed_cidrs_json = ?
+      WHERE id = ?
+    `).run(
+      next.enabled ? 1 : 0,
+      next.requestsPerMinute,
+      next.dailyQuota,
+      JSON.stringify(next.modelAllowlist),
+      next.expiresAt ?? null,
+      JSON.stringify(next.allowedCidrs),
+      id,
+    ).changes > 0
   }
 
   setApiKeyEnabled(id: string, enabled: boolean): boolean {
-    if (id === ENVIRONMENT_API_KEY_ID) return false
-    return this.requireConnection()
-      .prepare('UPDATE api_keys SET enabled = ? WHERE id = ?')
-      .run(enabled ? 1 : 0, id).changes > 0
+    return this.updateApiKey(id, { enabled })
+  }
+
+  rotateApiKey(
+    id: string,
+    gracePeriodMinutes: number,
+    expiresAt?: number,
+  ): CreatedApiKey | undefined {
+    if (id === ENVIRONMENT_API_KEY_ID) return undefined
+    const current = this.getApiKeyById(id)
+    if (!current) return undefined
+
+    return this.requireConnection().transaction(() => {
+      const created = this.createApiKey({
+        name: current.name,
+        scopes: current.scopes,
+        modelAllowlist: current.modelAllowlist,
+        requestsPerMinute: current.requestsPerMinute,
+        dailyQuota: current.dailyQuota,
+        expiresAt,
+        allowedCidrs: current.allowedCidrs,
+        rotatedFromId: current.id,
+      })
+      const graceUntil = Date.now() + gracePeriodMinutes * 60_000
+      const currentExpiry = current.expiresAt
+        ? Math.min(current.expiresAt, graceUntil)
+        : graceUntil
+      this.requireConnection().prepare(`
+        UPDATE api_keys
+        SET expires_at = ?, replaced_by_id = ?
+        WHERE id = ?
+      `).run(currentExpiry, created.record.id, current.id)
+      return created
+    })()
   }
 
   deleteApiKey(id: string): boolean {
@@ -552,7 +671,9 @@ export class StoreManager {
     const result = this.requireConnection().prepare(`
       UPDATE request_logs
       SET completed_at = ?, status = ?, status_code = ?, latency = ?, actual_model = ?,
-          provider_id = ?, account_id = ?, error_code = ?
+          provider_id = COALESCE(?, provider_id),
+          account_id = COALESCE(?, account_id),
+          error_code = COALESCE(?, error_code)
       WHERE id = ?
     `).run(
       Date.now(),
@@ -611,7 +732,7 @@ export class StoreManager {
   listAuditLogs(limit = 100): AuditLog[] {
     const rows = this.requireConnection().prepare(`
       SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT ?
-    `).all(Math.max(1, Math.min(500, limit))) as Array<{
+    `).all(Math.max(1, Math.min(2000, limit))) as Array<{
       id: string
       timestamp: number
       actor: string
@@ -672,6 +793,66 @@ export class StoreManager {
       modelUsage: {},
       providerUsage: {},
     }
+  }
+
+  getOperationalMetrics(limit = 500): OperationalMetrics {
+    const rows = this.listRequestLogs(limit)
+    const latencies = rows
+      .filter((entry) => entry.status !== 'pending')
+      .map((entry) => entry.latency)
+      .sort((left, right) => left - right)
+    const errors = new Map<string, number>()
+    const accounts = new Map<string, number>()
+    const models = new Map<string, number>()
+    const hourly = new Map<number, { total: number; success: number; error: number }>()
+
+    for (const entry of rows) {
+      if (entry.errorCode) errors.set(entry.errorCode, (errors.get(entry.errorCode) ?? 0) + 1)
+      if (entry.accountId) accounts.set(entry.accountId, (accounts.get(entry.accountId) ?? 0) + 1)
+      models.set(entry.model, (models.get(entry.model) ?? 0) + 1)
+      const hour = Math.floor(entry.timestamp / 3_600_000) * 3_600_000
+      const bucket = hourly.get(hour) ?? { total: 0, success: 0, error: 0 }
+      bucket.total += 1
+      if (entry.status === 'success') bucket.success += 1
+      if (entry.status === 'error') bucket.error += 1
+      hourly.set(hour, bucket)
+    }
+
+    const sortedEntries = <T extends string>(
+      source: Map<T, number>,
+      key: 'code' | 'accountId' | 'model',
+    ) => [...source.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 20)
+      .map(([value, count]) => ({ [key]: value, count }))
+
+    return {
+      sampleSize: rows.length,
+      latency: {
+        average: latencies.length > 0
+          ? Math.round(latencies.reduce((sum, latency) => sum + latency, 0) / latencies.length)
+          : 0,
+        p50: this.percentile(latencies, 0.5),
+        p95: this.percentile(latencies, 0.95),
+        maximum: latencies.at(-1) ?? 0,
+      },
+      status: {
+        success: rows.filter((entry) => entry.status === 'success').length,
+        error: rows.filter((entry) => entry.status === 'error').length,
+        pending: rows.filter((entry) => entry.status === 'pending').length,
+      },
+      errorsByCode: sortedEntries(errors, 'code') as OperationalMetrics['errorsByCode'],
+      usageByAccount: sortedEntries(accounts, 'accountId') as OperationalMetrics['usageByAccount'],
+      usageByModel: sortedEntries(models, 'model') as OperationalMetrics['usageByModel'],
+      hourly: [...hourly.entries()]
+        .sort((left, right) => left[0] - right[0])
+        .slice(-24)
+        .map(([hour, values]) => ({ hour, ...values })),
+    }
+  }
+
+  getMaintenanceStatus(): DatabaseMaintenanceStatus {
+    return this.requireDatabase().getMaintenanceStatus()
   }
 
   getStorePath(): string {
@@ -814,8 +995,9 @@ export class StoreManager {
     this.requireConnection().prepare(`
       INSERT INTO api_keys(
         id, name, key_hash, key_prefix, scopes_json, model_allowlist_json,
-        requests_per_minute, daily_quota, enabled, usage_count, created_at, last_used_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        requests_per_minute, daily_quota, enabled, usage_count, created_at, last_used_at,
+        expires_at, allowed_cidrs_json, rotated_from_id, replaced_by_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id,
       record.name,
@@ -829,6 +1011,10 @@ export class StoreManager {
       record.usageCount,
       record.createdAt,
       record.lastUsedAt ?? null,
+      record.expiresAt ?? null,
+      JSON.stringify(record.allowedCidrs),
+      record.rotatedFromId ?? null,
+      record.replacedById ?? null,
     )
   }
 
@@ -847,6 +1033,10 @@ export class StoreManager {
       usageCount: row.usage_count,
       createdAt: row.created_at,
       lastUsedAt: row.last_used_at ?? undefined,
+      expiresAt: row.expires_at ?? undefined,
+      allowedCidrs: JSON.parse(row.allowed_cidrs_json) as string[],
+      rotatedFromId: row.rotated_from_id ?? undefined,
+      replacedById: row.replaced_by_id ?? undefined,
     }
   }
 
@@ -896,6 +1086,12 @@ export class StoreManager {
 
   private currentDate(): string {
     return new Date().toISOString().slice(0, 10)
+  }
+
+  private percentile(values: number[], percentile: number): number {
+    if (values.length === 0) return 0
+    const index = Math.min(values.length - 1, Math.ceil(values.length * percentile) - 1)
+    return values[index] ?? 0
   }
 
   private assertStoredCredentialsDecryptable(): void {

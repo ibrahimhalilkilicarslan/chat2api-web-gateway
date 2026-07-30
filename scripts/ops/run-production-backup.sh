@@ -3,6 +3,29 @@ set -Eeuo pipefail
 
 umask 077
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly OPERATIONS_ENV="${CHAT2API_OPERATIONS_ENV:-${HOME}/.config/chat2api-web-gateway/operations.env}"
+
+if [[ -e "${OPERATIONS_ENV}" ]]; then
+  [[ -f "${OPERATIONS_ENV}" && ! -L "${OPERATIONS_ENV}" ]] || {
+    printf 'Chat2API backup failed: operations environment is not a regular file\n' >&2
+    exit 1
+  }
+  [[ "$(stat -c '%u' "${OPERATIONS_ENV}")" == "$(id -u)" ]] || {
+    printf 'Chat2API backup failed: operations environment owner is invalid\n' >&2
+    exit 1
+  }
+  [[ "$(stat -c '%a' "${OPERATIONS_ENV}")" == "600" ]] || {
+    printf 'Chat2API backup failed: operations environment must have mode 0600\n' >&2
+    exit 1
+  }
+  set -a
+  # shellcheck disable=SC1090
+  source "${OPERATIONS_ENV}"
+  set +a
+fi
+
 : "${CHAT2API_COMPOSE_PROJECT:?CHAT2API_COMPOSE_PROJECT is required}"
 
 readonly BACKUP_DIR="${CHAT2API_BACKUP_DIR:-${HOME}/.local/share/chat2api-web-gateway/backups}"
@@ -20,6 +43,13 @@ require_command() {
 for command_name in docker flock sha256sum; do
   require_command "${command_name}"
 done
+if [[ -n "${CHAT2API_OFFSITE_RCLONE_REMOTE:-}" ]]; then
+  require_command rclone
+  [[ "${CHAT2API_OFFSITE_RCLONE_REMOTE}" =~ ^[A-Za-z0-9._-]+:.+$ ]] || {
+    printf 'Chat2API backup failed: off-site rclone destination is invalid\n' >&2
+    exit 1
+  }
+fi
 
 [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] || {
   printf 'Chat2API backup failed: retention days must be a non-negative integer\n' >&2
@@ -54,8 +84,13 @@ readonly DESTINATION="${BACKUP_DIR}/chat2api-${TIMESTAMP}.sqlite"
 readonly STAGING="${DESTINATION}.partial"
 
 cleanup() {
+  local exit_code=$?
   rm -f -- "${STAGING}"
   docker exec "${CONTAINER_ID}" rm -f -- "${CONTAINER_BACKUP}" >/dev/null 2>&1 || true
+  if (( exit_code != 0 )) && [[ -x "${SCRIPT_DIR}/notify-operations.sh" ]]; then
+    "${SCRIPT_DIR}/notify-operations.sh" backup failed >/dev/null 2>&1 || true
+  fi
+  return "${exit_code}"
 }
 trap cleanup EXIT
 
@@ -89,7 +124,15 @@ fi
 
 mv -- "${STAGING}" "${DESTINATION}"
 docker exec "${CONTAINER_ID}" rm -f -- "${CONTAINER_BACKUP}" >/dev/null
-trap - EXIT
+
+if [[ -n "${CHAT2API_OFFSITE_RCLONE_REMOTE:-}" ]]; then
+  rclone copyto \
+    "${DESTINATION}" \
+    "${CHAT2API_OFFSITE_RCLONE_REMOTE%/}/$(basename "${DESTINATION}")" \
+    --checksum \
+    --immutable \
+    --no-traverse
+fi
 
 last_success_staging="${STATE_DIR}/backup.last-success.partial"
 printf '%s\t%s\t%s\n' "${TIMESTAMP}" "${DESTINATION}" "${host_checksum}" \
@@ -104,4 +147,8 @@ find "${BACKUP_DIR}" \
   -mtime "+${RETENTION_DAYS}" \
   -delete
 
+trap - EXIT
+if [[ -x "${SCRIPT_DIR}/notify-operations.sh" ]]; then
+  "${SCRIPT_DIR}/notify-operations.sh" backup succeeded >/dev/null 2>&1 || true
+fi
 printf 'Chat2API backup succeeded: %s\n' "${DESTINATION}"

@@ -17,6 +17,7 @@ describe('runtime configuration', () => {
     expect(config.nodeEnv).toBe('test')
     expect(config.masterKey).toHaveLength(32)
     expect(config.adminOrigins).toEqual(['https://gateway.example.com'])
+    expect(config.adminHosts).toEqual([])
     expect(config.trustProxy).toBe(1)
     expect(config.maxBodyBytes).toBe(2 * 1024 * 1024)
     expect(config.streamIdleTimeoutMs).toBe(90_000)
@@ -44,5 +45,22 @@ describe('runtime configuration', () => {
       ...validEnvironment,
       CHAT2API_TRUST_PROXY: 'true',
     })).toThrow('Invalid runtime configuration')
+  })
+
+  it('accepts only exact admin hostnames', () => {
+    expect(loadRuntimeConfig({
+      ...validEnvironment,
+      CHAT2API_ADMIN_HOSTS: 'gateway.example.com,admin.internal.example',
+    }).adminHosts).toEqual(['gateway.example.com', 'admin.internal.example'])
+
+    expect(() => loadRuntimeConfig({
+      ...validEnvironment,
+      CHAT2API_ADMIN_HOSTS: 'https://admin.example.com',
+    })).toThrow('Invalid exact admin host')
+
+    expect(() => loadRuntimeConfig({
+      ...validEnvironment,
+      CHAT2API_ADMIN_HOSTS: 'different.gateway.example.com',
+    })).toThrow('Every configured admin origin hostname')
   })
 })

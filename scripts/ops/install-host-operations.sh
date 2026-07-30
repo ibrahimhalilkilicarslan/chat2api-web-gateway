@@ -11,6 +11,7 @@ readonly LIBEXEC_DIR="${CHAT2API_LIBEXEC_DIR:-${HOME}/.local/libexec/chat2api-we
 readonly BACKUP_DIR="${CHAT2API_BACKUP_DIR:-${HOME}/.local/share/chat2api-web-gateway/backups}"
 readonly STATE_DIR="${CHAT2API_STATE_DIR:-${HOME}/.local/state/chat2api-web-gateway}"
 readonly REMOTE_ENV="${CHAT2API_REMOTE_ENV:-${HOME}/.config/chat2api-web-gateway/remote-client.env}"
+readonly OPERATIONS_ENV="${CHAT2API_OPERATIONS_ENV:-${HOME}/.config/chat2api-web-gateway/operations.env}"
 readonly CRON_BEGIN='# BEGIN CHAT2API_WEB_GATEWAY_OPERATIONS'
 readonly CRON_END='# END CHAT2API_WEB_GATEWAY_OPERATIONS'
 
@@ -42,6 +43,24 @@ install -m 0700 \
 install -m 0700 \
   "${SCRIPT_DIR}/check-production-health.sh" \
   "${LIBEXEC_DIR}/check-production-health.sh"
+install -m 0700 \
+  "${SCRIPT_DIR}/notify-operations.sh" \
+  "${LIBEXEC_DIR}/notify-operations.sh"
+
+if [[ -e "${OPERATIONS_ENV}" ]]; then
+  [[ -f "${OPERATIONS_ENV}" && ! -L "${OPERATIONS_ENV}" ]] || {
+    printf 'Chat2API operations install failed: operations environment is not a regular file\n' >&2
+    exit 1
+  }
+  [[ "$(stat -c '%u' "${OPERATIONS_ENV}")" == "$(id -u)" ]] || {
+    printf 'Chat2API operations install failed: operations environment owner is invalid\n' >&2
+    exit 1
+  }
+  [[ "$(stat -c '%a' "${OPERATIONS_ENV}")" == "600" ]] || {
+    printf 'Chat2API operations install failed: operations environment must have mode 0600\n' >&2
+    exit 1
+  }
+fi
 
 touch "${STATE_DIR}/backup.log" "${STATE_DIR}/health-errors.log"
 chmod 0600 "${STATE_DIR}/backup.log" "${STATE_DIR}/health-errors.log"
@@ -60,17 +79,19 @@ trap 'rm -f -- "${cron_staging}"' EXIT
 {
   printf '%s\n' "${filtered_crontab}"
   printf '%s\n' "${CRON_BEGIN}"
-  printf '43 2 * * * env CHAT2API_COMPOSE_PROJECT=%q CHAT2API_BACKUP_DIR=%q CHAT2API_STATE_DIR=%q %q >> %q 2>&1\n' \
+  printf '43 2 * * * env CHAT2API_COMPOSE_PROJECT=%q CHAT2API_BACKUP_DIR=%q CHAT2API_STATE_DIR=%q CHAT2API_OPERATIONS_ENV=%q %q >> %q 2>&1\n' \
     "${CHAT2API_COMPOSE_PROJECT}" \
     "${BACKUP_DIR}" \
     "${STATE_DIR}" \
+    "${OPERATIONS_ENV}" \
     "${LIBEXEC_DIR}/run-production-backup.sh" \
     "${STATE_DIR}/backup.log"
-  printf '*/5 * * * * env CHAT2API_COMPOSE_PROJECT=%q CHAT2API_BACKUP_DIR=%q CHAT2API_STATE_DIR=%q CHAT2API_REMOTE_ENV=%q CHAT2API_HEALTH_QUIET=1 %q > /dev/null 2>> %q\n' \
+  printf '*/5 * * * * env CHAT2API_COMPOSE_PROJECT=%q CHAT2API_BACKUP_DIR=%q CHAT2API_STATE_DIR=%q CHAT2API_REMOTE_ENV=%q CHAT2API_OPERATIONS_ENV=%q CHAT2API_HEALTH_QUIET=1 %q > /dev/null 2>> %q\n' \
     "${CHAT2API_COMPOSE_PROJECT}" \
     "${BACKUP_DIR}" \
     "${STATE_DIR}" \
     "${REMOTE_ENV}" \
+    "${OPERATIONS_ENV}" \
     "${LIBEXEC_DIR}/check-production-health.sh" \
     "${STATE_DIR}/health-errors.log"
   printf '%s\n' "${CRON_END}"
@@ -83,5 +104,6 @@ rm -f -- "${cron_staging}"
 printf 'Chat2API host operations installed:\n'
 printf '  backup runner: %s\n' "${LIBEXEC_DIR}/run-production-backup.sh"
 printf '  health monitor: %s\n' "${LIBEXEC_DIR}/check-production-health.sh"
+printf '  alert helper: %s\n' "${LIBEXEC_DIR}/notify-operations.sh"
 printf '  backup directory: %s\n' "${BACKUP_DIR}"
 printf '  state directory: %s\n' "${STATE_DIR}"

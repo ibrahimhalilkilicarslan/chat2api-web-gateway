@@ -3,6 +3,29 @@ set -Eeuo pipefail
 
 umask 077
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly OPERATIONS_ENV="${CHAT2API_OPERATIONS_ENV:-${HOME}/.config/chat2api-web-gateway/operations.env}"
+
+if [[ -e "${OPERATIONS_ENV}" ]]; then
+  [[ -f "${OPERATIONS_ENV}" && ! -L "${OPERATIONS_ENV}" ]] || {
+    printf 'Chat2API health check failed: operations environment is not a regular file\n' >&2
+    exit 1
+  }
+  [[ "$(stat -c '%u' "${OPERATIONS_ENV}")" == "$(id -u)" ]] || {
+    printf 'Chat2API health check failed: operations environment owner is invalid\n' >&2
+    exit 1
+  }
+  [[ "$(stat -c '%a' "${OPERATIONS_ENV}")" == "600" ]] || {
+    printf 'Chat2API health check failed: operations environment must have mode 0600\n' >&2
+    exit 1
+  }
+  set -a
+  # shellcheck disable=SC1090
+  source "${OPERATIONS_ENV}"
+  set +a
+fi
+
 : "${CHAT2API_COMPOSE_PROJECT:?CHAT2API_COMPOSE_PROJECT is required}"
 
 readonly REMOTE_ENV="${CHAT2API_REMOTE_ENV:-${HOME}/.config/chat2api-web-gateway/remote-client.env}"
@@ -35,6 +58,9 @@ fail() {
   record_status failed "${message}"
   if [[ "${previous_status}" != "failed" ]]; then
     logger --tag chat2api-health --priority user.err -- "${message}" || true
+    if [[ -x "${SCRIPT_DIR}/notify-operations.sh" ]]; then
+      "${SCRIPT_DIR}/notify-operations.sh" health failed >/dev/null 2>&1 || true
+    fi
   fi
   printf 'Chat2API health check failed: %s\n' "${message}" >&2
   exit 1
@@ -158,6 +184,9 @@ backup_age="$(( $(date +%s) - $(stat -c '%Y' "${latest_backup}") ))"
 record_status healthy 'all checks passed'
 if [[ "${previous_status}" == "failed" ]]; then
   logger --tag chat2api-health --priority user.notice -- 'Chat2API production health recovered' || true
+  if [[ -x "${SCRIPT_DIR}/notify-operations.sh" ]]; then
+    "${SCRIPT_DIR}/notify-operations.sh" health recovered >/dev/null 2>&1 || true
+  fi
 fi
 if [[ "${CHAT2API_HEALTH_QUIET:-0}" != "1" ]]; then
   printf 'Chat2API health check passed\n'

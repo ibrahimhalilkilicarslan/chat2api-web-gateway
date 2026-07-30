@@ -10,6 +10,7 @@ import {
   Command,
   Copy,
   Database,
+  Download,
   Eye,
   EyeOff,
   Filter,
@@ -48,6 +49,8 @@ import {
   loadDashboard,
   login,
   logout,
+  downloadAuditCsv,
+  rotateApiKey,
   testAccount,
   updateAccount,
   updateApiKey,
@@ -136,6 +139,8 @@ export function App() {
   const [accountProvider, setAccountProvider] = useState<Provider | null>(null)
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [keyPanel, setKeyPanel] = useState(false)
+  const [editingKey, setEditingKey] = useState<ApiKeyRecord | null>(null)
+  const [rotatingKey, setRotatingKey] = useState<ApiKeyRecord | null>(null)
   const [revealedKey, setRevealedKey] = useState<string | null>(null)
   const [commandOpen, setCommandOpen] = useState(false)
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
@@ -431,9 +436,11 @@ export function App() {
                   records={data.apiKeys}
                   onCreate={() => setKeyPanel(true)}
                   onToggle={(record) => run(
-                    () => updateApiKey(record.id, !record.enabled),
+                    () => updateApiKey(record.id, { enabled: !record.enabled }),
                     'API anahtarı güncellendi.',
                   )}
+                  onEdit={setEditingKey}
+                  onRotate={setRotatingKey}
                   onDelete={(record) => askConfirmation({
                     title: 'API anahtarını sil',
                     description: `${record.name} anahtarını kullanan istemciler anında erişimi kaybedecek.`,
@@ -446,16 +453,25 @@ export function App() {
                 />
               )}
               {view === 'activity' && (
-                <ActivityPage records={data.activity} accounts={data.accounts} />
+                <ActivityPage
+                  records={data.activity}
+                  accounts={data.accounts}
+                  metrics={data.overview.requests}
+                />
               )}
               {view === 'security' && (
                 <SecurityPage
                   settings={data.settings}
                   audit={data.audit}
+                  maintenance={data.maintenance}
                   sessionExpiresAt={sessionExpiresAt}
                   onSave={(settings) => run(
                     () => updateSettings(settings),
                     'Gateway ayarları kaydedildi.',
+                  )}
+                  onExportAudit={() => run(
+                    downloadAuditCsv,
+                    'Audit CSV indirildi.',
                   )}
                 />
               )}
@@ -517,6 +533,49 @@ export function App() {
               await refresh(true)
             } catch (cause) {
               setError(cause instanceof Error ? cause.message : 'API anahtarı oluşturulamadı.')
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      )}
+      {rotatingKey && (
+        <ApiKeyRotationPanel
+          record={rotatingKey}
+          busy={busy}
+          onClose={() => setRotatingKey(null)}
+          onSubmit={async (input) => {
+            setBusy(true)
+            setError(null)
+            try {
+              const created = await rotateApiKey(rotatingKey.id, input)
+              setRevealedKey(created.rawKey)
+              setRotatingKey(null)
+              await refresh(true)
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : 'API anahtarı döndürülemedi.')
+            } finally {
+              setBusy(false)
+            }
+          }}
+        />
+      )}
+      {editingKey && data && (
+        <ApiKeyPolicyPanel
+          record={editingKey}
+          providers={data.providers}
+          busy={busy}
+          onClose={() => setEditingKey(null)}
+          onSubmit={async (input) => {
+            setBusy(true)
+            setError(null)
+            try {
+              await updateApiKey(editingKey.id, input)
+              setEditingKey(null)
+              await refresh(true)
+              setNotice('API anahtarı politikası güncellendi.')
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : 'API anahtarı güncellenemedi.')
             } finally {
               setBusy(false)
             }
@@ -958,15 +1017,18 @@ function ApiKeysPage(props: {
   records: ApiKeyRecord[]
   onCreate: () => void
   onToggle: (record: ApiKeyRecord) => void
+  onEdit: (record: ApiKeyRecord) => void
+  onRotate: (record: ApiKeyRecord) => void
   onDelete: (record: ApiKeyRecord) => void
 }) {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'all' | 'active' | 'inactive'>('all')
   const filtered = props.records.filter((record) => {
+    const expired = Boolean(record.expiresAt && record.expiresAt <= Date.now())
     const matchesQuery = `${record.name} ${record.keyPrefix}`.toLowerCase().includes(query.toLowerCase())
     const matchesStatus = status === 'all'
-      || (status === 'active' && record.enabled)
-      || (status === 'inactive' && !record.enabled)
+      || (status === 'active' && record.enabled && !expired)
+      || (status === 'inactive' && (!record.enabled || expired))
     return matchesQuery && matchesStatus
   })
 
@@ -1008,13 +1070,16 @@ function ApiKeysPage(props: {
         <div className="key-grid">
           {filtered.map((record) => {
             const quotaPercent = Math.min(100, Math.round((record.usageCount / record.dailyQuota) * 100))
+            const expired = Boolean(record.expiresAt && record.expiresAt <= Date.now())
+            const statusTone = expired ? 'danger' : record.enabled ? 'success' : 'neutral'
+            const statusLabel = expired ? 'Süresi doldu' : record.enabled ? 'Aktif' : 'Kapalı'
             return (
               <article className="key-card" key={record.id}>
                 <header>
                   <div className="key-card-icon"><KeyRound size={18} /></div>
                   <div><strong>{record.name}</strong><span>{record.managedByEnvironment ? 'Ortam değişkeni' : 'Panel anahtarı'}</span></div>
-                  <StatusBadge status={record.enabled ? 'success' : 'neutral'}>
-                    {record.enabled ? 'Aktif' : 'Kapalı'}
+                  <StatusBadge status={statusTone}>
+                    {statusLabel}
                   </StatusBadge>
                 </header>
                 <code>{record.keyPrefix}••••••••••••</code>
@@ -1023,7 +1088,15 @@ function ApiKeysPage(props: {
                   <div><dt>Model erişimi</dt><dd>{record.modelAllowlist.length || 'Tümü'}</dd></div>
                   <div><dt>Dakikalık sınır</dt><dd>{formatNumber(record.requestsPerMinute)}</dd></div>
                   <div><dt>Son kullanım</dt><dd>{formatRelativeTime(record.lastUsedAt)}</dd></div>
+                  <div><dt>Geçerlilik</dt><dd>{record.expiresAt ? formatAbsoluteDate(record.expiresAt) : 'Süresiz'}</dd></div>
+                  <div><dt>IP politikası</dt><dd>{record.allowedCidrs.length > 0 ? `${record.allowedCidrs.length} kural` : 'Tüm IP’ler'}</dd></div>
                 </dl>
+                {(record.rotatedFromId || record.replacedById) && (
+                  <div className="rotation-note">
+                    <RefreshCw size={14} />
+                    {record.replacedById ? 'Yeni anahtara geçiş süresinde' : 'Rotasyon ile oluşturuldu'}
+                  </div>
+                )}
                 <div className="usage-progress">
                   <div><span>Toplam kullanım / günlük kota</span><strong>{formatNumber(record.usageCount)} / {formatNumber(record.dailyQuota)}</strong></div>
                   <i><span style={{ width: `${quotaPercent}%` }} /></i>
@@ -1032,6 +1105,12 @@ function ApiKeysPage(props: {
                   <footer>
                     <button className="secondary-button compact" onClick={() => props.onToggle(record)}>
                       {record.enabled ? 'Erişimi kapat' : 'Erişimi aç'}
+                    </button>
+                    <button className="secondary-button compact" onClick={() => props.onEdit(record)}>
+                      <Pencil size={14} /> Politikayı düzenle
+                    </button>
+                    <button className="secondary-button compact" onClick={() => props.onRotate(record)}>
+                      <RefreshCw size={14} /> Döndür
                     </button>
                     <button className="icon-button small danger" onClick={() => props.onDelete(record)} aria-label={`${record.name} anahtarını sil`}>
                       <Trash2 size={15} />
@@ -1054,7 +1133,15 @@ function ApiKeysPage(props: {
   )
 }
 
-function ActivityPage({ records, accounts }: { records: RequestActivity[]; accounts: Account[] }) {
+function ActivityPage({
+  records,
+  accounts,
+  metrics,
+}: {
+  records: RequestActivity[]
+  accounts: Account[]
+  metrics: DashboardData['overview']['requests']
+}) {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'all' | RequestActivity['status']>('all')
   const [accountId, setAccountId] = useState('all')
@@ -1067,9 +1154,10 @@ function ActivityPage({ records, accounts }: { records: RequestActivity[]; accou
   })
   const successCount = records.filter((record) => record.status === 'success').length
   const failureCount = records.filter((record) => record.status === 'error').length
-  const averageLatency = records.length > 0
-    ? Math.round(records.reduce((sum, record) => sum + record.latency, 0) / records.length)
-    : 0
+  const busiestAccount = metrics.usageByAccount[0]
+  const busiestAccountName = busiestAccount
+    ? accountNames.get(busiestAccount.accountId) ?? 'Silinmiş hesap'
+    : 'Henüz veri yok'
 
   return (
     <>
@@ -1081,8 +1169,30 @@ function ActivityPage({ records, accounts }: { records: RequestActivity[]; accou
       <div className="activity-summary-grid">
         <SummaryCard label="Görüntülenen" value={formatNumber(filtered.length)} icon={Filter} />
         <SummaryCard label="Başarılı" value={formatNumber(successCount)} icon={CheckCircle2} tone="success" />
-        <SummaryCard label="Hatalı" value={formatNumber(failureCount)} icon={AlertTriangle} tone={failureCount > 0 ? 'danger' : 'neutral'} />
-        <SummaryCard label="Ortalama süre" value={formatDuration(averageLatency)} icon={Clock3} />
+        <SummaryCard label="P50 gecikme" value={formatDuration(metrics.latencyP50)} icon={Clock3} />
+        <SummaryCard label="P95 gecikme" value={formatDuration(metrics.latencyP95)} icon={Gauge} tone={metrics.latencyP95 > 10_000 ? 'danger' : 'neutral'} />
+      </div>
+      <div className="operations-insight-grid">
+        <article>
+          <span>Hata dağılımı</span>
+          <strong>{failureCount === 0 ? 'Hata kaydı yok' : `${failureCount} başarısız istek`}</strong>
+          <div className="insight-tags">
+            {metrics.errorsByCode.slice(0, 4).map((entry) => (
+              <span key={entry.code}>{entry.code} · {entry.count}</span>
+            ))}
+            {metrics.errorsByCode.length === 0 && <span>Operasyon normal</span>}
+          </div>
+        </article>
+        <article>
+          <span>En yoğun hesap</span>
+          <strong>{busiestAccountName}</strong>
+          <small>{busiestAccount ? `${formatNumber(busiestAccount.count)} istek` : 'İstek geldikçe hesap dağılımı görünür.'}</small>
+        </article>
+        <article>
+          <span>Maksimum gecikme</span>
+          <strong>{formatDuration(metrics.maximumLatency)}</strong>
+          <small>{formatNumber(metrics.total)} kayıtlık güvenli metadata örneklemi</small>
+        </article>
       </div>
       <section className="panel">
         <div className="activity-chart">
@@ -1126,13 +1236,17 @@ function ActivityPage({ records, accounts }: { records: RequestActivity[]; accou
 function SecurityPage({
   settings,
   audit,
+  maintenance,
   sessionExpiresAt,
   onSave,
+  onExportAudit,
 }: {
   settings: GatewaySettings
   audit: AuditEvent[]
+  maintenance: DashboardData['maintenance']
   sessionExpiresAt?: number
   onSave: (settings: Pick<GatewaySettings, 'loadBalanceStrategy'>) => void
+  onExportAudit: () => void
 }) {
   const [strategy, setStrategy] = useState(settings.loadBalanceStrategy)
   const securityChecks = [
@@ -1211,8 +1325,37 @@ function SecurityPage({
         </section>
       </div>
 
+      <section className="panel maintenance-panel">
+        <PanelHeader
+          title="SQLite bakım durumu"
+          subtitle="Veri içeriğini açmadan bütünlük ve depolama sağlığı"
+          action={(
+            <StatusBadge status={maintenance.integrity === 'ok' ? 'success' : 'danger'}>
+              {maintenance.integrity === 'ok' ? 'Integrity OK' : 'Kontrol gerekli'}
+            </StatusBadge>
+          )}
+        />
+        <div className="maintenance-grid">
+          <div><Database size={18} /><span><small>Veritabanı</small><strong>{formatBytes(maintenance.databaseBytes)}</strong></span></div>
+          <div><Activity size={18} /><span><small>WAL dosyası</small><strong>{formatBytes(maintenance.walBytes)}</strong></span></div>
+          <div><Layers3 size={18} /><span><small>Şema sürümü</small><strong>v{maintenance.schemaVersion}</strong></span></div>
+          <div><ShieldCheck size={18} /><span><small>Journal modu</small><strong>{maintenance.journalMode.toUpperCase()}</strong></span></div>
+        </div>
+        <p className="maintenance-note">
+          {formatNumber(maintenance.pageCount)} sayfa · {formatNumber(maintenance.freelistCount)} boş sayfa · bütünlük son kontrolü {formatRelativeTime(maintenance.integrityCheckedAt)} · içerik ve credential değerleri bu ekrana taşınmaz.
+        </p>
+      </section>
+
       <section className="panel audit-panel">
-        <PanelHeader title="Yönetim audit günlüğü" subtitle="Hassas değer içermeyen işlem izi" />
+        <PanelHeader
+          title="Yönetim audit günlüğü"
+          subtitle="Hassas değer içermeyen işlem izi"
+          action={(
+            <button className="secondary-button compact" onClick={onExportAudit}>
+              <Download size={15} /> CSV indir
+            </button>
+          )}
+        />
         <div className="audit-list">
           {audit.slice(0, 30).map((event) => (
             <div key={event.id}>
@@ -1344,6 +1487,8 @@ function ApiKeyPanel(props: {
     modelAllowlist: string[]
     requestsPerMinute: number
     dailyQuota: number
+    expiresAt?: number
+    allowedCidrs: string[]
   }) => Promise<void>
 }) {
   const [name, setName] = useState('')
@@ -1351,6 +1496,8 @@ function ApiKeyPanel(props: {
   const [daily, setDaily] = useState(1000)
   const models = [...new Set(props.providers.flatMap((provider) => provider.supportedModels))].sort()
   const [selectedModels, setSelectedModels] = useState<string[]>([])
+  const [expiryDays, setExpiryDays] = useState('90')
+  const [allowedCidrs, setAllowedCidrs] = useState('')
   return (
     <Modal title="Yeni API anahtarı" subtitle="İstemciye yalnız ihtiyaç duyduğu kapsamı ve kotayı verin." onClose={props.onClose} drawer>
       <form className="drawer-form" onSubmit={(event) => {
@@ -1361,6 +1508,8 @@ function ApiKeyPanel(props: {
           modelAllowlist: selectedModels,
           requestsPerMinute: rpm,
           dailyQuota: daily,
+          expiresAt: expiryDays ? Date.now() + Number(expiryDays) * 24 * 60 * 60_000 : undefined,
+          allowedCidrs: parsePolicyLines(allowedCidrs),
         })
       }}>
         <div className="form-section">
@@ -1381,7 +1530,30 @@ function ApiKeyPanel(props: {
           </div>
         </div>
         <div className="form-section">
-          <div className="form-section-head"><span>03</span><div><strong>Model erişimi</strong><small>Seçim yoksa tüm aktif modeller kullanılabilir</small></div></div>
+          <div className="form-section-head"><span>03</span><div><strong>Erişim sınırları</strong><small>Süre ve kaynak ağı politikası</small></div></div>
+          <div className="form-grid">
+            <Field label="Anahtar geçerliliği">
+              <select value={expiryDays} onChange={(event) => setExpiryDays(event.target.value)}>
+                <option value="30">30 gün</option>
+                <option value="90">90 gün</option>
+                <option value="180">180 gün</option>
+                <option value="365">1 yıl</option>
+                <option value="">Süresiz</option>
+              </select>
+            </Field>
+            <Field label="IP / CIDR allowlist" hint="Boş bırakılırsa tüm kaynak IP’ler kabul edilir.">
+              <textarea
+                value={allowedCidrs}
+                onChange={(event) => setAllowedCidrs(event.target.value)}
+                rows={3}
+                spellCheck={false}
+                placeholder={'203.0.113.10\n2001:db8::/32'}
+              />
+            </Field>
+          </div>
+        </div>
+        <div className="form-section">
+          <div className="form-section-head"><span>04</span><div><strong>Model erişimi</strong><small>Seçim yoksa tüm aktif modeller kullanılabilir</small></div></div>
           <div className="model-selector">
             {models.map((model) => (
               <label className={selectedModels.includes(model) ? 'selected' : ''} key={model}>
@@ -1404,6 +1576,161 @@ function ApiKeyPanel(props: {
           <button type="button" className="secondary-button" onClick={props.onClose}>Vazgeç</button>
           <button className="primary-button" disabled={props.busy}>
             {props.busy ? <><RefreshCw size={16} className="spin" /> Oluşturuluyor</> : 'Anahtarı oluştur'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function ApiKeyRotationPanel(props: {
+  record: ApiKeyRecord
+  busy: boolean
+  onClose: () => void
+  onSubmit: (input: { gracePeriodMinutes: number; expiresAt?: number }) => Promise<void>
+}) {
+  const [gracePeriodMinutes, setGracePeriodMinutes] = useState(60)
+  const [expiryDays, setExpiryDays] = useState('90')
+
+  return (
+    <Modal
+      title="API anahtarını güvenle döndür"
+      subtitle={`${props.record.name} için aynı kota, model ve IP politikalarıyla yeni bir anahtar üretilecek.`}
+      onClose={props.onClose}
+      drawer
+    >
+      <form className="drawer-form" onSubmit={(event) => {
+        event.preventDefault()
+        void props.onSubmit({
+          gracePeriodMinutes,
+          expiresAt: expiryDays ? Date.now() + Number(expiryDays) * 24 * 60 * 60_000 : undefined,
+        })
+      }}>
+        <div className="form-section">
+          <div className="form-section-head"><span>01</span><div><strong>Geçiş penceresi</strong><small>Eski istemcilerin yeni anahtara taşınma süresi</small></div></div>
+          <Field label="Eski anahtarın çalışacağı ek süre">
+            <select value={gracePeriodMinutes} onChange={(event) => setGracePeriodMinutes(Number(event.target.value))}>
+              <option value={0}>Hemen kapat</option>
+              <option value={15}>15 dakika</option>
+              <option value={60}>1 saat</option>
+              <option value={1440}>1 gün</option>
+              <option value={10080}>7 gün</option>
+            </select>
+          </Field>
+          <Field label="Yeni anahtarın geçerliliği">
+            <select value={expiryDays} onChange={(event) => setExpiryDays(event.target.value)}>
+              <option value="30">30 gün</option>
+              <option value="90">90 gün</option>
+              <option value="180">180 gün</option>
+              <option value="365">1 yıl</option>
+              <option value="">Süresiz</option>
+            </select>
+          </Field>
+        </div>
+        <div className="risk-note">
+          <RefreshCw size={18} />
+          <p>Yeni raw anahtar yalnız bir kez gösterilir. Eski anahtar seçilen geçiş süresi sonunda otomatik olarak geçersiz olur.</p>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={props.onClose}>Vazgeç</button>
+          <button className="primary-button" disabled={props.busy}>
+            {props.busy ? <><RefreshCw size={16} className="spin" /> Döndürülüyor</> : 'Yeni anahtarı üret'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function ApiKeyPolicyPanel(props: {
+  record: ApiKeyRecord
+  providers: Provider[]
+  busy: boolean
+  onClose: () => void
+  onSubmit: (input: {
+    modelAllowlist: string[]
+    requestsPerMinute: number
+    dailyQuota: number
+    expiresAt: number | null
+    allowedCidrs: string[]
+  }) => Promise<void>
+}) {
+  const models = [...new Set(props.providers.flatMap((provider) => provider.supportedModels))].sort()
+  const [selectedModels, setSelectedModels] = useState(props.record.modelAllowlist)
+  const [rpm, setRpm] = useState(props.record.requestsPerMinute)
+  const [dailyQuota, setDailyQuota] = useState(props.record.dailyQuota)
+  const [expiresAt, setExpiresAt] = useState(formatDateTimeLocal(props.record.expiresAt))
+  const [allowedCidrs, setAllowedCidrs] = useState(props.record.allowedCidrs.join('\n'))
+
+  return (
+    <Modal
+      title="API anahtarı politikası"
+      subtitle={`${props.record.name} için erişim sınırlarını güncelleyin. Raw anahtar bu işlemde okunmaz veya değişmez.`}
+      onClose={props.onClose}
+      drawer
+    >
+      <form className="drawer-form" onSubmit={(event) => {
+        event.preventDefault()
+        void props.onSubmit({
+          modelAllowlist: selectedModels,
+          requestsPerMinute: rpm,
+          dailyQuota,
+          expiresAt: expiresAt ? new Date(expiresAt).getTime() : null,
+          allowedCidrs: parsePolicyLines(allowedCidrs),
+        })
+      }}>
+        <div className="form-section">
+          <div className="form-section-head"><span>01</span><div><strong>Kota ve süre</strong><small>İstemcinin operasyon sınırları</small></div></div>
+          <div className="form-grid">
+            <Field label="Dakikalık istek">
+              <input type="number" min={1} max={100000} value={rpm} onChange={(event) => setRpm(Number(event.target.value))} required />
+            </Field>
+            <Field label="Günlük kota">
+              <input type="number" min={1} max={10000000} value={dailyQuota} onChange={(event) => setDailyQuota(Number(event.target.value))} required />
+            </Field>
+            <Field label="Geçerlilik sonu" hint="Boş bırakılırsa süresiz olur.">
+              <input
+                type="datetime-local"
+                value={expiresAt}
+                min={formatDateTimeLocal(Date.now() + 2 * 60_000)}
+                onChange={(event) => setExpiresAt(event.target.value)}
+              />
+            </Field>
+            <Field label="IP / CIDR allowlist" hint="Her satıra bir IP veya CIDR; boş değer tüm kaynaklara izin verir.">
+              <textarea
+                value={allowedCidrs}
+                onChange={(event) => setAllowedCidrs(event.target.value)}
+                rows={4}
+                spellCheck={false}
+                placeholder={'203.0.113.10\n2001:db8::/32'}
+              />
+            </Field>
+          </div>
+        </div>
+        <div className="form-section">
+          <div className="form-section-head"><span>02</span><div><strong>Model erişimi</strong><small>Seçim yoksa tüm aktif modeller</small></div></div>
+          <div className="model-selector">
+            {models.map((model) => (
+              <label className={selectedModels.includes(model) ? 'selected' : ''} key={model}>
+                <input
+                  type="checkbox"
+                  checked={selectedModels.includes(model)}
+                  onChange={() => setSelectedModels((current) => (
+                    current.includes(model)
+                      ? current.filter((entry) => entry !== model)
+                      : [...current, model]
+                  ))}
+                />
+                <span><Check size={13} /></span>
+                <code>{model}</code>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" onClick={props.onClose}>Vazgeç</button>
+          <button className="primary-button" disabled={props.busy}>
+            {props.busy ? <><RefreshCw size={16} className="spin" /> Kaydediliyor</> : 'Politikayı kaydet'}
           </button>
         </div>
       </form>
@@ -1804,7 +2131,14 @@ function getNavigationBadge(view: View, data: DashboardData | null): { value: st
   if (!data) return null
   if (view === 'providers' && data.overview.accounts.attention > 0) return { value: String(data.overview.accounts.attention), tone: 'danger' }
   if (view === 'providers') return { value: String(data.overview.accounts.active), tone: 'neutral' }
-  if (view === 'keys') return { value: String(data.apiKeys.filter((record) => record.enabled).length), tone: 'neutral' }
+  if (view === 'keys') {
+    return {
+      value: String(data.apiKeys.filter((record) => (
+        record.enabled && (!record.expiresAt || record.expiresAt > Date.now())
+      )).length),
+      tone: 'neutral',
+    }
+  }
   if (view === 'activity' && data.overview.requests.today > 0) return { value: formatNumber(data.overview.requests.today), tone: 'neutral' }
   return null
 }
@@ -1847,6 +2181,7 @@ function auditActionLabel(action: string): string {
     'account.delete': 'Provider hesabı silindi',
     'account.health_check': 'Credential sağlık kontrolü',
     'api_key.create': 'API anahtarı oluşturuldu',
+    'api_key.rotate': 'API anahtarı döndürüldü',
     'api_key.update': 'API anahtarı güncellendi',
     'api_key.delete': 'API anahtarı silindi',
     'gateway.settings.update': 'Gateway ayarı güncellendi',
@@ -1867,6 +2202,28 @@ function formatDuration(value: number): string {
 function formatDate(value?: number): string {
   if (!value) return '—'
   return new Intl.DateTimeFormat('tr-TR', { dateStyle: 'short', timeStyle: 'short' }).format(value)
+}
+
+function formatAbsoluteDate(value: number): string {
+  return new Intl.DateTimeFormat('tr-TR', { dateStyle: 'medium' }).format(value)
+}
+
+function formatDateTimeLocal(value?: number): string {
+  if (!value) return ''
+  const date = new Date(value)
+  const offset = date.getTimezoneOffset() * 60_000
+  return new Date(value - offset).toISOString().slice(0, 16)
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
+function parsePolicyLines(value: string): string[] {
+  return [...new Set(value.split(/[\n,]/).map((entry) => entry.trim()).filter(Boolean))]
 }
 
 function formatRelativeTime(value?: number): string {

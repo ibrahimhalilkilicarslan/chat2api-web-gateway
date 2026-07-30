@@ -15,7 +15,7 @@ health, client keys, quotas, request metadata, and security audit events.
 - OpenAI-compatible `POST /v1/chat/completions`
 - JSON and SSE streaming responses
 - Encrypted DeepSeek credential storage
-- Hashed, scoped, rate-limited client API keys
+- Hashed, scoped, expiring, IP-restricted, rate-limited client API keys
 - Account health checks, circuit breakers, quotas, and concurrency limits
 - Metadata-only request activity and admin audit logs
 - Responsive admin console at `/admin/`
@@ -163,6 +163,8 @@ pnpm smoke:remote
 - [Security](docs/security.md)
 - [Deployment](docs/deployment.md)
 - [Operations](docs/operations.md)
+- [Admin access](docs/admin-access.md)
+- [Client quickstart](docs/client-quickstart.md)
 - [DeepSeek provider notes](docs/providers/deepseek.md)
 - [Public release checklist](docs/public-release-checklist.md)
 

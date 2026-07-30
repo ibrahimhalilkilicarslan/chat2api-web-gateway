@@ -33,6 +33,7 @@ const environmentSchema = z.object({
   CHAT2API_ADMIN_TOKEN: z.string().min(32).max(512),
   CHAT2API_SESSION_SECRET: z.string().min(32).max(512),
   CHAT2API_ADMIN_ORIGINS: z.string().min(1),
+  CHAT2API_ADMIN_HOSTS: z.string().optional(),
   CHAT2API_MAX_BODY_BYTES: z.coerce.number().int().min(1024).max(10 * 1024 * 1024).default(2 * 1024 * 1024),
   CHAT2API_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(1000).default(20),
   CHAT2API_ACCOUNT_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(2),
@@ -57,6 +58,7 @@ export interface RuntimeConfig {
   adminToken: string
   sessionSecret: string
   adminOrigins: readonly string[]
+  adminHosts: readonly string[]
   maxBodyBytes: number
   globalConcurrency: number
   accountConcurrency: number
@@ -96,11 +98,36 @@ function parseOrigins(value: string): readonly string[] {
   return origins
 }
 
+function parseHosts(value: string | undefined): readonly string[] {
+  if (!value?.trim()) return []
+  const hosts = [...new Set(value.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean))]
+  for (const host of hosts) {
+    if (
+      host.includes('/')
+      || host.includes('@')
+      || host.includes(':')
+      || new URL(`https://${host}`).hostname !== host
+    ) {
+      throw new Error(`Invalid exact admin host: ${host}`)
+    }
+  }
+  return hosts
+}
+
 export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env): RuntimeConfig {
   const parsed = environmentSchema.safeParse(environment)
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')
     throw new Error(`Invalid runtime configuration: ${issues}`)
+  }
+
+  const adminOrigins = parseOrigins(parsed.data.CHAT2API_ADMIN_ORIGINS)
+  const adminHosts = parseHosts(parsed.data.CHAT2API_ADMIN_HOSTS)
+  if (
+    adminHosts.length > 0
+    && adminOrigins.some((origin) => !adminHosts.includes(new URL(origin).hostname.toLowerCase()))
+  ) {
+    throw new Error('Every configured admin origin hostname must be present in CHAT2API_ADMIN_HOSTS')
   }
 
   return {
@@ -115,7 +142,8 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     bootstrapApiKey: parsed.data.CHAT2API_BOOTSTRAP_API_KEY,
     adminToken: parsed.data.CHAT2API_ADMIN_TOKEN,
     sessionSecret: parsed.data.CHAT2API_SESSION_SECRET,
-    adminOrigins: parseOrigins(parsed.data.CHAT2API_ADMIN_ORIGINS),
+    adminOrigins,
+    adminHosts,
     maxBodyBytes: parsed.data.CHAT2API_MAX_BODY_BYTES,
     globalConcurrency: parsed.data.CHAT2API_GLOBAL_CONCURRENCY,
     accountConcurrency: parsed.data.CHAT2API_ACCOUNT_CONCURRENCY,

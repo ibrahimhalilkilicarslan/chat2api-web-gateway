@@ -16,6 +16,7 @@
 - `CHAT2API_ADMIN_TOKEN`: at least 32 random characters
 - `CHAT2API_SESSION_SECRET`: at least 32 random characters
 - `CHAT2API_ADMIN_ORIGINS`: comma-separated exact HTTPS origins
+- `CHAT2API_ADMIN_HOSTS`: comma-separated exact admin request hostnames
 - `CHAT2API_TRUST_PROXY`: bounded proxy hop count, normally `1`
 
 Operational limits include:
@@ -36,7 +37,8 @@ Store all real values only in Coolify secret configuration. Unrestricted
 - Mount one persistent volume at `/data`.
 - Keep one running replica.
 - Use `/health/ready` for readiness.
-- Restrict `/admin/` at the network or identity-aware proxy layer.
+- Restrict `/admin/` at the network or identity-aware proxy layer and configure
+  a dedicated exact admin hostname where possible.
 - Never mount the Docker socket.
 
 After deployment, create/update the DeepSeek web account through the HTTPS admin
@@ -52,3 +54,20 @@ non-stream and stream smoke with non-sensitive prompts.
 5. Restore data only when a schema/data fault is proven.
 
 Never replace the persistent volume with an empty directory during rollback.
+
+The release helper records the previous image ID but intentionally never
+restores data automatically:
+
+```bash
+COOLIFY_URL=https://coolify.example.com \
+COOLIFY_TOKEN="<private-token>" \
+COOLIFY_RESOURCE_UUID="<resource-uuid>" \
+CHAT2API_COMPOSE_PROJECT="<compose-project>" \
+scripts/ops/release-coolify.sh
+```
+
+It requires a clean commit equal to `origin/main`, runs the complete quality
+gate, immutable local image smoke, verified backup, Coolify deployment, new
+container health, and remote smoke. If deployment fails, select the recorded
+previous deployment/image in Coolify. Restore SQLite only after a proven data
+fault and an isolated restore drill.

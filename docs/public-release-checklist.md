@@ -10,7 +10,7 @@ version.
 - [ ] Confirm the repository history contains no credentials, cookies, tokens,
       provider payloads, SQLite files, or user data.
 - [ ] Run secret scanning against the full Git history.
-- [ ] Review every dependency license.
+- [ ] Run `pnpm licenses:check` and review every dependency license.
 - [ ] Tag an immutable reviewed commit.
 
 ## Product boundaries
@@ -48,3 +48,8 @@ version.
 - [ ] Configure a provider-health alert without logging credentials.
 - [ ] Publish a supported-version and security-reporting policy.
 - [ ] Keep the admin console behind an identity-aware proxy where possible.
+- [ ] Configure exact `CHAT2API_ADMIN_HOSTS` and verify the public API hostname
+      returns `404` for `/admin/`.
+- [ ] Configure an off-host backup destination and test one immutable copy.
+- [ ] Configure the private security-reporting channel documented in
+      `SECURITY.md`.

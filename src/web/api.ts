@@ -6,6 +6,7 @@ import type {
   AuditEvent,
   DashboardData,
   GatewaySettings,
+  MaintenanceStatus,
   Overview,
   Provider,
   RequestActivity,
@@ -85,7 +86,7 @@ export async function logout(): Promise<void> {
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
-  const [overview, providers, accounts, apiKeys, activity, audit, settings] = await Promise.all([
+  const [overview, providers, accounts, apiKeys, activity, audit, settings, maintenance] = await Promise.all([
     request<Overview>('/admin/api/overview'),
     request<Provider[]>('/admin/api/providers'),
     request<Account[]>('/admin/api/accounts'),
@@ -93,8 +94,9 @@ export async function loadDashboard(): Promise<DashboardData> {
     request<RequestActivity[]>('/admin/api/activity?limit=100'),
     request<AuditEvent[]>('/admin/api/audit?limit=80'),
     request<GatewaySettings>('/admin/api/settings'),
+    request<MaintenanceStatus>('/admin/api/maintenance'),
   ])
-  return { overview, providers, accounts, apiKeys, activity, audit, settings }
+  return { overview, providers, accounts, apiKeys, activity, audit, settings, maintenance }
 }
 
 export function createAccount(input: {
@@ -135,6 +137,8 @@ export function createApiKey(input: {
   modelAllowlist: string[]
   requestsPerMinute: number
   dailyQuota: number
+  expiresAt?: number
+  allowedCidrs: string[]
 }): Promise<{ rawKey: string; record: ApiKeyRecord }> {
   return request('/admin/api/api-keys', {
     method: 'POST',
@@ -142,15 +146,47 @@ export function createApiKey(input: {
   })
 }
 
-export function updateApiKey(id: string, enabled: boolean): Promise<void> {
+export function updateApiKey(
+  id: string,
+  input: Partial<Pick<
+    ApiKeyRecord,
+    'enabled' | 'modelAllowlist' | 'requestsPerMinute' | 'dailyQuota' | 'allowedCidrs'
+  >> & { expiresAt?: number | null },
+): Promise<ApiKeyRecord> {
   return request(`/admin/api/api-keys/${id}`, {
     method: 'PATCH',
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(input),
+  })
+}
+
+export function rotateApiKey(
+  id: string,
+  input: { gracePeriodMinutes: number; expiresAt?: number },
+): Promise<{ rawKey: string; record: ApiKeyRecord }> {
+  return request(`/admin/api/api-keys/${id}/rotate`, {
+    method: 'POST',
+    body: JSON.stringify(input),
   })
 }
 
 export function deleteApiKey(id: string): Promise<void> {
   return request(`/admin/api/api-keys/${id}`, { method: 'DELETE' })
+}
+
+export async function downloadAuditCsv(): Promise<void> {
+  const response = await fetch('/admin/api/audit/export.csv', {
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    throw new ApiError('Audit dışa aktarılamadı.', response.status)
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `chat2api-audit-${new Date().toISOString().slice(0, 10)}.csv`
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
 export function updateSettings(

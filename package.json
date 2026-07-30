@@ -1,6 +1,6 @@
 {
   "name": "chat2api-web-gateway",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "description": "Hardened, web-only OpenAI-compatible gateway for isolated DeepSeek web accounts.",
   "type": "module",
@@ -32,10 +32,15 @@
     "audit:prod": "pnpm audit --prod --audit-level high",
     "backup:sqlite": "node scripts/backup-sqlite.mjs",
     "backup:verify": "node scripts/verify-sqlite-backup.mjs",
-    "ops:check": "bash -n scripts/install.sh scripts/show-admin-token.sh scripts/ops/*.sh",
+    "restore:drill": "node scripts/restore-drill.mjs",
+    "licenses:check": "node scripts/license-audit.mjs",
+    "history:scan": "bash scripts/history-secret-scan.sh",
+    "ops:check": "bash -n scripts/install.sh scripts/show-admin-token.sh scripts/history-secret-scan.sh scripts/ops/*.sh",
     "smoke:container": "node scripts/container-smoke.mjs",
     "smoke:remote": "node scripts/remote-smoke.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm ops:check && pnpm setup:smoke && pnpm security:check && pnpm audit:prod"
+    "smoke:compat": "node scripts/compatibility-smoke.mjs",
+    "smoke:load": "node scripts/load-smoke.mjs",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm ops:check && pnpm setup:smoke && pnpm security:check && pnpm licenses:check && pnpm audit:prod"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

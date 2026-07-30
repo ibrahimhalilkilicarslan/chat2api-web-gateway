@@ -12,8 +12,9 @@ HTTPS reverse proxy
   -> /data/chat2api.sqlite
 ```
 
-The exact public origin must be listed in `CHAT2API_ADMIN_ORIGINS`. The admin
-session is origin-bound, uses secure cookies in production, and rejects cross-site
+The exact public origin must be listed in `CHAT2API_ADMIN_ORIGINS`, and its
+hostname must be listed in `CHAT2API_ADMIN_HOSTS`. The admin session is
+origin-bound, uses secure cookies in production, and rejects cross-site
 mutations.
 
 ## One-command Docker setup
@@ -90,7 +91,8 @@ obsolete backups after validating the replacement.
 2. Sign in with the locally retrieved admin token.
 3. Add a dedicated DeepSeek web account.
 4. Run `Bağlantıyı test et`.
-5. Create a separate API key for each client.
+5. Create a separate API key for each client with the minimum scopes, model
+   allowlist, expiry, quota, and stable egress IP/CIDR policy.
 6. Store each raw client key immediately; it is shown once.
 7. Send one non-sensitive JSON request.
 8. Send one non-sensitive streaming request.
@@ -106,6 +108,7 @@ Use `compose.yaml` or the `Dockerfile`.
 - keep the container non-root and read-only,
 - set every required environment value as a secret,
 - keep `CHAT2API_TRUST_PROXY` bounded, normally `1`,
+- set exact `CHAT2API_ADMIN_ORIGINS` and `CHAT2API_ADMIN_HOSTS`,
 - never mount `/var/run/docker.sock`.
 
 Coolify deployments should not run `scripts/install.sh`; configure secrets in
@@ -123,6 +126,10 @@ Before updating:
 6. verify readiness, admin login, models, JSON chat, and stream chat.
 
 Rollback the image before restoring data unless a data fault is proven.
+
+For client examples and key policy guidance, see
+[Client Quickstart](client-quickstart.md). For a dedicated protected admin
+hostname, see [Admin Access](admin-access.md).
 
 ## Uninstalling
 

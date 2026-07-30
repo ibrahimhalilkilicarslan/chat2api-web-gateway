@@ -29,6 +29,7 @@ export default tseslint.config(
       'src/server/**/*.ts',
       'src/web/**/*.{ts,tsx}',
       'scripts/**/*.mjs',
+      'examples/**/*.mjs',
       '*.config.{js,ts}',
     ],
     languageOptions: {
@@ -37,6 +38,7 @@ export default tseslint.config(
         URL: 'readonly',
         console: 'readonly',
         fetch: 'readonly',
+        AbortSignal: 'readonly',
         process: 'readonly',
       },
     },

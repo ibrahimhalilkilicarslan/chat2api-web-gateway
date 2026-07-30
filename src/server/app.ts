@@ -110,6 +110,21 @@ export async function buildApp(
       : false,
     referrerPolicy: { policy: 'no-referrer' },
   })
+  app.addHook('onRequest', async (request, reply) => {
+    if (
+      config.adminHosts.length > 0
+      && request.url.startsWith('/admin')
+      && !config.adminHosts.includes(request.hostname.toLowerCase())
+    ) {
+      await reply.code(404).send({
+        error: {
+          code: 'not_found',
+          message: 'Route not found.',
+          requestId: request.id,
+        },
+      })
+    }
+  })
 
   const routing = new ProviderRoutingEngine(config)
   const concurrency = new ConcurrencyGate(config.globalConcurrency)

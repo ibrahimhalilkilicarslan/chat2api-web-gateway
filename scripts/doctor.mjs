@@ -69,8 +69,20 @@ if (!existsSync(environmentPath)) {
         && (origin.protocol === 'https:' || (origin.protocol === 'http:' && isLoopback)),
       `${origin.protocol}//${origin.host}`,
     )
+    const adminHosts = (environment.get('CHAT2API_ADMIN_HOSTS') ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+    record(
+      'Admin host restriction',
+      adminHosts.length > 0
+        && adminHosts.every((host) => host === host.toLowerCase() && !/[/:@]/.test(host))
+        && adminHosts.includes(origin.hostname.toLowerCase()),
+      adminHosts.length > 0 ? `${adminHosts.length} exact hostname(s)` : 'missing',
+    )
   } catch {
     record('Admin origin', false, 'invalid exact origin')
+    record('Admin host restriction', false, 'could not validate without a valid origin')
   }
 }
 

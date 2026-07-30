@@ -57,11 +57,19 @@ CHAT2API_BACKUP_PATH=/secure/off-volume/chat2api-YYYYMMDD.sqlite \
 pnpm backup:verify
 ```
 
-For a restore drill, copy a verified backup and the separately protected master
-key into an isolated non-production environment, start exactly one replica, and
-confirm readiness, admin login, account-list redaction, and authenticated
-`/v1/models`. Do not run provider generation unless the drill uses a dedicated
-test account. Record the backup timestamp and drill result without credentials.
+Run an isolated restore drill against an already built immutable image:
+
+```bash
+CHAT2API_BACKUP_PATH=/secure/off-volume/chat2api-YYYYMMDD.sqlite \
+CHAT2API_MASTER_KEY="<separately-protected-key>" \
+CHAT2API_RESTORE_IMAGE=chat2api-web-gateway:<commit> \
+pnpm restore:drill
+```
+
+The drill creates a disposable Docker volume, restores the database, validates
+credential decryption, readiness, the authentication boundary and the models
+contract, then removes the container and volume. It does not generate provider
+content and never modifies the source backup.
 
 Back up the master encryption key separately from the database. Test restoration
 periodically in an isolated environment.
@@ -82,6 +90,8 @@ container environment values, or invoke Coolify:
 - `scripts/ops/install-host-operations.sh` installs working copies under the
   current user's `~/.local/libexec` and replaces only its own marked crontab
   block.
+- `scripts/ops/notify-operations.sh` sends only coarse service/event/status/time
+  data to an optional HTTPS webhook.
 
 Install or refresh the jobs from a trusted checkout:
 
@@ -115,6 +125,20 @@ provider content. The local host backup protects against application-container
 or Docker-volume loss, but not total host loss. Replicate verified backup files
 and the separately protected master key to access-controlled off-host storage.
 
+Optional operations settings live outside the repository:
+
+```bash
+install -d -m 0700 "$HOME/.config/chat2api-web-gateway"
+install -m 0600 scripts/ops/operations.env.example \
+  "$HOME/.config/chat2api-web-gateway/operations.env"
+```
+
+Set `CHAT2API_OFFSITE_RCLONE_REMOTE` to copy each verified immutable backup to
+an access-controlled rclone destination. Keep rclone credentials in its private
+configuration. Set `CHAT2API_ALERT_WEBHOOK_URL` to receive coarse backup,
+health, and release events. The webhook never receives prompts, responses,
+tokens, provider details, account IDs, or error payloads.
+
 ## Remote smoke
 
 Read credentials from environment variables or a mode-`0600` environment file;
@@ -141,7 +165,8 @@ and backup age. Do not send prompts, responses, or credentials to alerting tools
 
 - Environment bootstrap API key: replace the environment secret and restart.
   The previous bootstrap key is revoked atomically; admin-created keys remain.
-- Client API keys: create replacement, migrate clients, disable/delete old key.
+- Client API keys can be rotated in the admin console with a bounded grace
+  period; the replacement inherits scopes, allowlist, quotas, and IP policy.
 - Admin token: replace secret and restart; existing signed sessions remain valid
   until session-secret rotation or expiry.
 - Session secret: replace and restart to invalidate all admin sessions.

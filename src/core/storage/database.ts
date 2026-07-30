@@ -1,22 +1,38 @@
-import { chmodSync, mkdirSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 
+export interface DatabaseMaintenanceStatus {
+  integrity: 'ok' | 'error'
+  integrityCheckedAt: number
+  journalMode: string
+  schemaVersion: number
+  pageCount: number
+  pageSize: number
+  freelistCount: number
+  databaseBytes: number
+  walBytes: number
+}
+
 export class GatewayDatabase {
   readonly connection: BetterSqlite3.Database
+  private integrityCache?: {
+    result: 'ok' | 'error'
+    checkedAt: number
+  }
 
-  constructor(path: string) {
-    if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  constructor(private readonly path: string) {
+    if (this.path !== ':memory:') {
+      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
     }
 
-    this.connection = new BetterSqlite3(path)
+    this.connection = new BetterSqlite3(this.path)
     this.connection.pragma('foreign_keys = ON')
     this.connection.pragma('busy_timeout = 5000')
     this.connection.pragma('synchronous = NORMAL')
-    if (path !== ':memory:') {
+    if (this.path !== ':memory:') {
       this.connection.pragma('journal_mode = WAL')
-      chmodSync(path, 0o600)
+      chmodSync(this.path, 0o600)
     }
     this.migrate()
   }
@@ -29,6 +45,35 @@ export class GatewayDatabase {
     const row = this.connection.prepare('SELECT 1 AS ready').get() as { ready: number } | undefined
     if (row?.ready !== 1) {
       throw new Error('SQLite readiness check failed')
+    }
+  }
+
+  getMaintenanceStatus(): DatabaseMaintenanceStatus {
+    const now = Date.now()
+    if (!this.integrityCache || now - this.integrityCache.checkedAt >= 5 * 60_000) {
+      const quickCheck = this.connection
+        .prepare('PRAGMA quick_check')
+        .get() as Record<string, string> | undefined
+      const integrityResult = Object.values(quickCheck ?? {})[0]
+      this.integrityCache = {
+        result: integrityResult === 'ok' ? 'ok' : 'error',
+        checkedAt: now,
+      }
+    }
+    const schema = this.connection
+      .prepare('SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations')
+      .get() as { version: number }
+
+    return {
+      integrity: this.integrityCache.result,
+      integrityCheckedAt: this.integrityCache.checkedAt,
+      journalMode: String(this.connection.pragma('journal_mode', { simple: true })),
+      schemaVersion: schema.version,
+      pageCount: Number(this.connection.pragma('page_count', { simple: true })),
+      pageSize: Number(this.connection.pragma('page_size', { simple: true })),
+      freelistCount: Number(this.connection.pragma('freelist_count', { simple: true })),
+      databaseBytes: this.fileSize(this.path),
+      walBytes: this.path === ':memory:' ? 0 : this.fileSize(`${this.path}-wal`),
     }
   }
 
@@ -137,5 +182,25 @@ export class GatewayDatabase {
           .run(1, Date.now())
       })()
     }
+
+    if (current.version < 2) {
+      this.connection.transaction(() => {
+        this.connection.exec(`
+          ALTER TABLE api_keys ADD COLUMN expires_at INTEGER;
+          ALTER TABLE api_keys ADD COLUMN allowed_cidrs_json TEXT NOT NULL DEFAULT '[]';
+          ALTER TABLE api_keys ADD COLUMN rotated_from_id TEXT;
+          ALTER TABLE api_keys ADD COLUMN replaced_by_id TEXT;
+          CREATE INDEX idx_api_keys_expires_at ON api_keys(expires_at);
+        `)
+        this.connection
+          .prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(2, Date.now())
+      })()
+    }
+  }
+
+  private fileSize(path: string): number {
+    if (!existsSync(path)) return 0
+    return statSync(path).size
   }
 }

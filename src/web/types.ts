@@ -1,7 +1,19 @@
 export interface Overview {
   providers: { total: number; enabled: number }
   accounts: { total: number; active: number; attention: number }
-  requests: { total: number; today: number; successRate: number; averageLatency: number }
+  requests: {
+    total: number
+    today: number
+    successRate: number
+    averageLatency: number
+    latencyP50: number
+    latencyP95: number
+    maximumLatency: number
+    errorsByCode: Array<{ code: string; count: number }>
+    usageByAccount: Array<{ accountId: string; count: number }>
+    usageByModel: Array<{ model: string; count: number }>
+    hourly: Array<{ hour: number; total: number; success: number; error: number }>
+  }
   gateway: {
     active: number
     limit: number
@@ -71,6 +83,10 @@ export interface ApiKeyRecord {
   usageCount: number
   createdAt: number
   lastUsedAt?: number
+  expiresAt?: number
+  allowedCidrs: string[]
+  rotatedFromId?: string
+  replacedById?: string
 }
 
 export interface RequestActivity {
@@ -124,6 +140,18 @@ export interface GatewaySettings {
   }
 }
 
+export interface MaintenanceStatus {
+  integrity: 'ok' | 'error'
+  integrityCheckedAt: number
+  journalMode: string
+  schemaVersion: number
+  pageCount: number
+  pageSize: number
+  freelistCount: number
+  databaseBytes: number
+  walBytes: number
+}
+
 export interface DashboardData {
   overview: Overview
   providers: Provider[]
@@ -132,4 +160,5 @@ export interface DashboardData {
   activity: RequestActivity[]
   audit: AuditEvent[]
   settings: GatewaySettings
+  maintenance: MaintenanceStatus
 }

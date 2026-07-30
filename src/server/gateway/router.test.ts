@@ -22,6 +22,7 @@ const runtimeConfig: RuntimeConfig = {
   adminToken: 'admin-token-that-is-at-least-thirty-two-characters',
   sessionSecret: 'session-secret-that-is-at-least-thirty-two-characters',
   adminOrigins: ['http://localhost:8080'],
+  adminHosts: [],
   maxBodyBytes: 2 * 1024 * 1024,
   globalConcurrency: 10,
   accountConcurrency: 1,
