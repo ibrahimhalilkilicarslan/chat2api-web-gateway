@@ -62,7 +62,7 @@ function safeString(value: unknown): string {
 }
 
 function responseId(): string {
-  return `chatcmpl_${randomUUID().replaceAll('-', '')}`
+  return `chatcmpl-${randomUUID().replaceAll('-', '')}`
 }
 
 class DeepSeekEventDecoder {

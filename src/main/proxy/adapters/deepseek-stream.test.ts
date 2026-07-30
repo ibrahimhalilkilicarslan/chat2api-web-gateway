@@ -75,7 +75,7 @@ describe('DeepSeekStreamHandler', () => {
       session_id: upstreamSessionId,
     })))
 
-    expect(output).toMatch(/"id":"chatcmpl_[a-f0-9]+"/)
+    expect(output).toMatch(/"id":"chatcmpl-[a-f0-9]+"/)
     expect(output).not.toContain(upstreamSessionId)
     expect(output).not.toContain('"usage"')
   })
