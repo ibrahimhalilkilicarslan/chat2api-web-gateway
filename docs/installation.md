@@ -89,8 +89,10 @@ obsolete backups after validating the replacement.
 
 1. Open `/admin/`.
 2. Sign in with the locally retrieved admin token.
-3. Download the Session Connector package for Windows, macOS, or Linux from the
-   release page linked by `DeepSeek hesabı ekle`.
+3. In `DeepSeek hesabı ekle`, use the automatically selected Windows, macOS, or
+   Linux download. The button downloads the pinned release asset directly;
+   architecture-specific alternatives are listed under `Diğer işletim
+   sistemleri`.
 4. Open the connector once after download. Windows and Linux register a
    per-user launch handler; macOS keeps manual code entry.
 5. Select `Otomatik bağla`, enter an account label, and choose `Connector ile

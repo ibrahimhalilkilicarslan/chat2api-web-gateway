@@ -63,7 +63,15 @@ import {
   updateSettings,
   validateAccountCredentials,
 } from './api'
-import { buildNativeConnectorUrl, supportsNativeConnectorLaunch } from './connector'
+import {
+  buildNativeConnectorUrl,
+  connectorChecksumUrl,
+  connectorDownloadOptions,
+  connectorReleaseVersion,
+  detectConnectorDownload,
+  resolveConnectorDownload,
+  supportsNativeConnectorLaunch,
+} from './connector'
 import type {
   Account,
   AccountHealthResult,
@@ -1505,6 +1513,9 @@ function AccountPanel(props: {
   const [linkCopied, setLinkCopied] = useState(false)
   const [connectorLaunched, setConnectorLaunched] = useState(false)
   const [linkError, setLinkError] = useState<string | null>(null)
+  const [connectorDownload, setConnectorDownload] = useState(() => (
+    typeof window === 'undefined' ? null : detectConnectorDownload(window.navigator)
+  ))
   const linkedReported = useRef(false)
   const isEditing = Boolean(props.account)
   const credentialUpdates = Object.fromEntries(
@@ -1516,6 +1527,16 @@ function AccountPanel(props: {
     && !props.busy
     && !validating
     && (!validationRequired || validation?.healthy)
+
+  useEffect(() => {
+    let disposed = false
+    void resolveConnectorDownload(window.navigator).then((download) => {
+      if (!disposed) setConnectorDownload(download)
+    })
+    return () => {
+      disposed = true
+    }
+  }, [])
 
   useEffect(() => {
     if (
@@ -1729,15 +1750,49 @@ function AccountPanel(props: {
                   <strong>Chat2API Session Connector</strong>
                   <p>Windows ve Linux’ta tek tıkla açılır. macOS için bağlantı kodu yedek akışı kullanılabilir.</p>
                 </div>
-                <a
-                  className="secondary-button compact"
-                  href="https://github.com/ibrahimhalilkilicarslan/chat2api-session-connector/releases"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                >
-                  <DownloadCloud size={14} /> Connector paketleri
-                </a>
+                {connectorDownload ? (
+                  <a
+                    className="secondary-button compact connector-download-button"
+                    href={connectorDownload.url}
+                    download={connectorDownload.filename}
+                    rel="noreferrer"
+                    title={`${connectorDownload.shortLabel} · v${connectorReleaseVersion}`}
+                  >
+                    <DownloadCloud size={14} /> {connectorDownload.label}
+                  </a>
+                ) : (
+                  <span
+                    className="secondary-button compact connector-download-button disabled"
+                    aria-disabled="true"
+                    title="Connector Windows, macOS ve Linux masaüstü sistemlerini destekler."
+                  >
+                    <DownloadCloud size={14} /> Masaüstünde indirin
+                  </span>
+                )}
               </div>
+              <details className="connector-download-options">
+                <summary>
+                  Diğer işletim sistemleri
+                  <small>v{connectorReleaseVersion}</small>
+                </summary>
+                <div>
+                  {connectorDownloadOptions.map((download) => (
+                    <a
+                      key={`${download.platform}-${download.architecture}`}
+                      href={download.url}
+                      download={download.filename}
+                      rel="noreferrer"
+                    >
+                      <Download size={13} />
+                      {download.shortLabel}
+                    </a>
+                  ))}
+                  <a href={connectorChecksumUrl} download="SHA256SUMS" rel="noreferrer">
+                    <ShieldCheck size={13} />
+                    SHA-256 doğrulama
+                  </a>
+                </div>
+              </details>
               <details className="connector-install-help">
                 <summary>İlk kullanım</summary>
                 <ol>

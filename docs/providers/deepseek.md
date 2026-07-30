@@ -75,8 +75,11 @@ DeepSeek API key.
 
 ### Connector installation
 
-Download the immutable release archive for the current operating system from
-the connector release page linked by the admin console:
+The admin console detects the current desktop operating system and links
+directly to the immutable, tested connector archive. It does not send the
+operator through the GitHub release listing. Architecture-specific alternatives
+and the SHA-256 checksum manifest remain available under **Other operating
+systems**:
 
 - Windows: portable `.exe` archive
 - macOS: `.app` archive for Intel or Apple Silicon
