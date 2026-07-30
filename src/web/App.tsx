@@ -530,7 +530,7 @@ function ApiKeysPage(props: {
         subtitle="Raw değer yalnız oluşturulduğu anda gösterilir."
         action={<button className="primary-button compact" onClick={props.onCreate}><Plus size={16} /> Yeni anahtar</button>}
       />
-      <div className="responsive-table">
+      <div className="responsive-table desktop-record-table">
         <table>
           <thead><tr><th>Ad</th><th>Prefix</th><th>Kapsam</th><th>Kota</th><th>Son kullanım</th><th>Durum</th><th /></tr></thead>
           <tbody>
@@ -558,6 +558,48 @@ function ApiKeysPage(props: {
           </tbody>
         </table>
         {props.records.length === 0 && <div className="empty-state"><KeyRound size={24} /><strong>Henüz API anahtarı yok</strong></div>}
+      </div>
+      <div className="mobile-record-list">
+        {props.records.map((record) => (
+          <article className="mobile-record-card" key={record.id}>
+            <header className="mobile-record-head">
+              <div>
+                <strong>{record.name}</strong>
+                <small>{formatNumber(record.usageCount)} kullanım</small>
+              </div>
+              <StatusBadge status={record.enabled ? 'success' : 'neutral'}>
+                {record.enabled ? 'Aktif' : 'Kapalı'}
+              </StatusBadge>
+            </header>
+            <code className="mobile-key-prefix">{record.keyPrefix}…</code>
+            <dl>
+              <div><dt>Kapsam</dt><dd>{record.scopes.join(', ')}</dd></div>
+              <div><dt>Kota</dt><dd>{record.requestsPerMinute}/dk · {formatNumber(record.dailyQuota)}/gün</dd></div>
+              <div><dt>Son kullanım</dt><dd>{formatDate(record.lastUsedAt)}</dd></div>
+              <div>
+                <dt>Yönetim</dt>
+                <dd>{record.managedByEnvironment ? 'Ortam değişkeni' : 'Panel'}</dd>
+              </div>
+            </dl>
+            {!record.managedByEnvironment && (
+              <div className="mobile-record-actions">
+                <button className="mini-button" onClick={() => props.onToggle(record)}>
+                  {record.enabled ? 'Kapat' : 'Aç'}
+                </button>
+                <button
+                  className="icon-button small danger"
+                  onClick={() => props.onDelete(record)}
+                  aria-label={`${record.name} anahtarını sil`}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            )}
+          </article>
+        ))}
+        {props.records.length === 0 && (
+          <div className="empty-state"><KeyRound size={24} /><strong>Henüz API anahtarı yok</strong></div>
+        )}
       </div>
     </section>
   )
@@ -816,23 +858,53 @@ function ActivityTable({
   compact?: boolean
 }) {
   return (
-    <div className="responsive-table activity-table">
-      <table>
-        <thead><tr><th>Durum</th><th>Model</th>{!compact && <th>Hesap</th>}<th>Süre</th><th>Zaman</th></tr></thead>
-        <tbody>
-          {records.map((record) => (
-            <tr key={record.id}>
-              <td><StatusBadge status={record.status === 'success' ? 'success' : record.status === 'pending' ? 'warning' : 'danger'}>{record.status}</StatusBadge></td>
-              <td><strong>{record.model}</strong><small>{record.isStream ? 'stream' : 'json'} · {record.requestId.slice(0, 8)}</small></td>
-              {!compact && <td>{accountNames.get(record.accountId ?? '') ?? record.providerId ?? '—'}</td>}
-              <td>{formatNumber(record.latency)} ms</td>
-              <td>{formatDate(record.timestamp)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {records.length === 0 && <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong></div>}
-    </div>
+    <>
+      <div className="responsive-table activity-table desktop-record-table">
+        <table>
+          <thead><tr><th>Durum</th><th>Model</th>{!compact && <th>Hesap</th>}<th>Süre</th><th>Zaman</th></tr></thead>
+          <tbody>
+            {records.map((record) => (
+              <tr key={record.id}>
+                <td><StatusBadge status={record.status === 'success' ? 'success' : record.status === 'pending' ? 'warning' : 'danger'}>{record.status}</StatusBadge></td>
+                <td><strong>{record.model}</strong><small>{record.isStream ? 'stream' : 'json'} · {record.requestId.slice(0, 8)}</small></td>
+                {!compact && <td>{accountNames.get(record.accountId ?? '') ?? record.providerId ?? '—'}</td>}
+                <td>{formatNumber(record.latency)} ms</td>
+                <td>{formatDate(record.timestamp)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {records.length === 0 && <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong></div>}
+      </div>
+      <div className="mobile-record-list">
+        {records.map((record) => (
+          <article className="mobile-record-card activity-record-card" key={record.id}>
+            <header className="mobile-record-head">
+              <StatusBadge status={record.status === 'success' ? 'success' : record.status === 'pending' ? 'warning' : 'danger'}>
+                {record.status}
+              </StatusBadge>
+              <time>{formatDate(record.timestamp)}</time>
+            </header>
+            <div className="mobile-record-title">
+              <strong>{record.model}</strong>
+              <small>{record.isStream ? 'stream' : 'json'} · {record.requestId.slice(0, 8)}</small>
+            </div>
+            <dl>
+              {!compact && (
+                <div>
+                  <dt>Hesap</dt>
+                  <dd>{accountNames.get(record.accountId ?? '') ?? record.providerId ?? '—'}</dd>
+                </div>
+              )}
+              <div><dt>Süre</dt><dd>{formatNumber(record.latency)} ms</dd></div>
+            </dl>
+          </article>
+        ))}
+        {records.length === 0 && (
+          <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong></div>
+        )}
+      </div>
+    </>
   )
 }
 

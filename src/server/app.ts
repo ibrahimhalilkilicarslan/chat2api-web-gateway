@@ -95,7 +95,7 @@ export async function buildApp(
         defaultSrc: ["'self'"],
         baseUri: ["'none'"],
         connectSrc: ["'self'"],
-        fontSrc: ["'self'"],
+        fontSrc: ["'self'", 'data:'],
         formAction: ["'self'"],
         frameAncestors: ["'none'"],
         imgSrc: ["'self'", 'data:'],

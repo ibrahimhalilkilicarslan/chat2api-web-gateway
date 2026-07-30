@@ -67,6 +67,7 @@ describe('gateway HTTP security contract', () => {
     expect(response.json()).toEqual({ status: 'ok' })
     expect(response.headers['x-content-type-options']).toBe('nosniff')
     expect(response.headers['referrer-policy']).toBe('no-referrer')
+    expect(response.headers['content-security-policy']).toContain("font-src 'self' data:")
   })
 
   it('requires a Bearer key and rejects query-string credentials', async () => {

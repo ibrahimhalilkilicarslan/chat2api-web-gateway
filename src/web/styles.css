@@ -152,6 +152,7 @@ main { min-width: 0; }
 .empty-row { min-height: 46px; display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--muted); border: 1px dashed var(--line); border-radius: 9px; font-size: 9px; }
 
 .responsive-table { overflow-x: auto; }
+.mobile-record-list { display: none; }
 table { width: 100%; border-collapse: collapse; min-width: 620px; }
 th { height: 39px; padding: 0 16px; color: #768293; background: #0e1319; text-align: left; text-transform: uppercase; letter-spacing: .08em; font-size: 8px; font-weight: 700; }
 td { height: 56px; padding: 9px 16px; border-top: 1px solid var(--line-soft); color: var(--muted-strong); font-size: 9px; }
@@ -266,6 +267,42 @@ td code { color: #9ee8ca; font-size: 9px; }
   .form-grid, .model-selector { grid-template-columns: 1fr; }
   .account-row { flex-wrap: wrap; }
   .account-row > div:nth-child(2) { flex-basis: calc(100% - 24px); }
+  .desktop-record-table { display: none; }
+  .mobile-record-list { display: grid; gap: 9px; padding: 12px; }
+  .mobile-record-card {
+    min-width: 0; padding: 13px; border: 1px solid var(--line-soft); border-radius: 11px;
+    background: #0e141b;
+  }
+  .mobile-record-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .mobile-record-head strong { display: block; color: var(--text); font-size: 11px; }
+  .mobile-record-head small, .mobile-record-head time {
+    display: block; margin-top: 3px; color: var(--muted); font-size: 8px;
+  }
+  .mobile-key-prefix {
+    display: block; width: max-content; max-width: 100%; margin: 12px 0; padding: 6px 8px;
+    overflow: hidden; color: #9ee8ca; background: rgba(52,211,153,.055);
+    border: 1px solid rgba(52,211,153,.12); border-radius: 7px; font-size: 9px;
+    text-overflow: ellipsis;
+  }
+  .mobile-record-card dl {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0; padding-top: 11px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .mobile-record-card dl div { min-width: 0; }
+  .mobile-record-card dt {
+    margin-bottom: 3px; color: #728094; font-size: 7px; font-weight: 700;
+    letter-spacing: .07em; text-transform: uppercase;
+  }
+  .mobile-record-card dd {
+    margin: 0; color: var(--muted-strong); font-size: 9px; overflow-wrap: anywhere;
+  }
+  .mobile-record-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
+  .activity-record-card .mobile-record-head { align-items: center; }
+  .activity-record-card .mobile-record-head time { margin: 0; }
+  .mobile-record-title { margin: 12px 0 10px; }
+  .mobile-record-title strong { display: block; color: var(--text); font-size: 11px; }
+  .mobile-record-title small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px; }
+  .activity-record-card dl { grid-template-columns: minmax(0, 1fr) auto; }
   .modal-layer { padding: 0; align-items: end; }
   .modal { max-height: 92vh; border-radius: 17px 17px 0 0; border-bottom: 0; }
   .modal-actions { position: sticky; bottom: -20px; padding: 13px 0 20px; background: #121821; }
