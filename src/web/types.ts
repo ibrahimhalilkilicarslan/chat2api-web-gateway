@@ -5,6 +5,7 @@ export interface Overview {
     total: number
     today: number
     successRate: number
+    todaySuccessRate: number
     averageLatency: number
     latencyP50: number
     latencyP95: number

@@ -279,6 +279,9 @@ export async function registerAdminRoutes(
     const successRate = statistics.totalRequests > 0
       ? statistics.successRequests / statistics.totalRequests
       : 1
+    const todaySuccessRate = today.totalRequests > 0
+      ? today.successRequests / today.totalRequests
+      : 1
     return reply.send({
       providers: {
         total: providers.length,
@@ -293,6 +296,7 @@ export async function registerAdminRoutes(
         total: statistics.totalRequests,
         today: today.totalRequests,
         successRate,
+        todaySuccessRate,
         averageLatency: statistics.totalRequests > 0
           ? Math.round(statistics.totalLatency / statistics.totalRequests)
           : 0,

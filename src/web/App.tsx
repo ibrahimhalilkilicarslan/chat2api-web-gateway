@@ -126,14 +126,14 @@ const navigation: Array<{
     id: 'activity',
     label: 'İstek aktivitesi',
     shortLabel: 'Aktivite',
-    description: 'Metadata ve performans',
+    description: 'Teknik kayıtlar ve performans',
     icon: Activity,
   },
   {
     id: 'security',
     label: 'Güvenlik',
     shortLabel: 'Güvenlik',
-    description: 'Sınırlar ve audit kayıtları',
+    description: 'Sınırlar ve denetim kayıtları',
     icon: ShieldCheck,
   },
 ]
@@ -350,7 +350,7 @@ export function App() {
             <Menu size={20} />
           </button>
           <div className="topbar-title">
-            <p className="eyebrow">Control plane / {activeNavigation.shortLabel}</p>
+            <p className="eyebrow">Yönetim / {activeNavigation.shortLabel}</p>
             <h1>{activeNavigation.label}</h1>
           </div>
           <div className="topbar-actions">
@@ -675,13 +675,13 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
           <div className="brand-mark large"><Server size={25} /></div>
           <div><strong>Chat2API</strong><span>DeepSeek Web Gateway</span></div>
         </div>
-        <p className="eyebrow">Private control plane</p>
+        <p className="eyebrow">Özel yönetim alanı</p>
         <h1>Yapay zekâ erişimini tek bir güvenli yüzeyden yönetin.</h1>
         <p>Hesap sağlığını, istemci anahtarlarını ve istek performansını içerik kaydetmeden izleyin.</p>
         <div className="login-assurances">
-          <span><CheckCircle2 size={16} /> Credential şifreleme</span>
-          <span><CheckCircle2 size={16} /> Metadata-only audit</span>
-          <span><CheckCircle2 size={16} /> Fail-closed erişim</span>
+          <span><CheckCircle2 size={16} /> Şifreli oturumlar</span>
+          <span><CheckCircle2 size={16} /> Yalnız teknik kayıt</span>
+          <span><CheckCircle2 size={16} /> Kapalı varsayılan erişim</span>
         </div>
       </section>
       <section className="login-card">
@@ -747,7 +747,7 @@ function OverviewPage({
   onAddAccount: () => void
   onCreateKey: () => void
 }) {
-  const recent = data.activity.slice(0, 7)
+  const recent = data.activity.slice(0, 5)
   const readiness = [
     {
       label: 'DeepSeek hesabı',
@@ -798,11 +798,13 @@ function OverviewPage({
     {
       label: 'Bugünkü istek',
       value: formatNumber(data.overview.requests.today),
-      detail: data.overview.requests.total === 0
-        ? 'Henüz trafik yok'
-        : `%${Math.round(data.overview.requests.successRate * 100)} başarı oranı`,
+      detail: data.overview.requests.today === 0
+        ? 'Bugün henüz trafik yok'
+        : `%${Math.round(data.overview.requests.todaySuccessRate * 100)} bugün başarılı`,
       icon: Activity,
-      tone: data.overview.requests.successRate >= 0.95 ? 'success' : 'warning',
+      tone: data.overview.requests.today === 0
+        ? 'neutral'
+        : data.overview.requests.todaySuccessRate >= 0.95 ? 'success' : 'warning',
     },
     {
       label: 'Ortalama gecikme',
@@ -895,7 +897,7 @@ function OverviewPage({
           <section className="panel endpoint-panel">
             <div className="endpoint-icon"><Zap size={20} /></div>
             <div>
-              <span className="eyebrow">OpenAI-compatible endpoint</span>
+              <span className="eyebrow">OpenAI uyumlu API</span>
               <h3>İstemci bağlantısı hazır</h3>
               <p>Mevcut OpenAI SDK’nızda yalnız base URL ve API anahtarını değiştirin.</p>
             </div>
@@ -920,7 +922,7 @@ function ProvidersPage(props: {
   return (
     <>
       <PageIntro
-        eyebrow="Provider workspace"
+        eyebrow="Hesap yönetimi"
         title="DeepSeek web oturumlarını yönetin"
         description="Hesapları kapasite, sağlık ve günlük kullanım bilgisiyle tek ekranda izleyin."
         action={firstProvider && (
@@ -947,7 +949,7 @@ function ProvidersPage(props: {
                   <p>{provider.description}</p>
                   <div className="provider-meta">
                     <span><Layers3 size={13} /> {provider.supportedModels.length} model</span>
-                    <span><LockKeyhole size={13} /> Web session</span>
+                    <span><LockKeyhole size={13} /> Web oturumu</span>
                     <span><Activity size={13} /> Sağlık kontrolü</span>
                   </div>
                 </div>
@@ -1064,7 +1066,7 @@ function ApiKeysPage(props: {
   return (
     <>
       <PageIntro
-        eyebrow="Client access"
+        eyebrow="İstemci erişimi"
         title="İstemci erişimini kontrollü dağıtın"
         description="Her entegrasyon için ayrı anahtar, model kapsamı ve kota tanımlayın."
         action={(
@@ -1196,6 +1198,7 @@ function ActivityPage({
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'all' | RequestActivity['status']>('all')
   const [accountId, setAccountId] = useState('all')
+  const [activityLimit, setActivityLimit] = useState(12)
   const accountNames = new Map(accounts.map((account) => [account.id, account.name]))
   const filtered = records.filter((record) => {
     const searchable = `${record.model} ${record.actualModel ?? ''} ${record.requestId} ${record.errorCode ?? ''}`.toLowerCase()
@@ -1203,8 +1206,17 @@ function ActivityPage({
       && (status === 'all' || record.status === status)
       && (accountId === 'all' || record.accountId === accountId)
   })
-  const successCount = records.filter((record) => record.status === 'success').length
-  const failureCount = records.filter((record) => record.status === 'error').length
+  const visibleRecords = filtered.slice(0, activityLimit)
+  const successCount = filtered.filter((record) => record.status === 'success').length
+  const failureCount = filtered.filter((record) => record.status === 'error').length
+  const errorCounts = Array.from(filtered.reduce((counts, record) => {
+    if (record.status !== 'error') return counts
+    const code = record.errorCode ?? 'unknown_error'
+    counts.set(code, (counts.get(code) ?? 0) + 1)
+    return counts
+  }, new Map<string, number>()))
+    .map(([code, count]) => ({ code, count }))
+    .sort((left, right) => right.count - left.count)
   const busiestAccount = metrics.usageByAccount[0]
   const busiestAccountName = busiestAccount
     ? accountNames.get(busiestAccount.accountId) ?? 'Silinmiş hesap'
@@ -1213,7 +1225,7 @@ function ActivityPage({
   return (
     <>
       <PageIntro
-        eyebrow="Request telemetry"
+        eyebrow="İstek izleme"
         title="İstek sağlığını içerik kaydetmeden izleyin"
         description="Prompt ve yanıtlar saklanmaz; yalnız durum, model, süre ve anonim istek kimliği gösterilir."
       />
@@ -1228,10 +1240,10 @@ function ActivityPage({
           <span>Hata dağılımı</span>
           <strong>{failureCount === 0 ? 'Hata kaydı yok' : `${failureCount} başarısız istek`}</strong>
           <div className="insight-tags">
-            {metrics.errorsByCode.slice(0, 4).map((entry) => (
-              <span key={entry.code}>{entry.code} · {entry.count}</span>
+            {errorCounts.slice(0, 4).map((entry) => (
+              <span key={entry.code} title={entry.code}>{activityErrorLabel(entry.code)} · {entry.count}</span>
             ))}
-            {metrics.errorsByCode.length === 0 && <span>Operasyon normal</span>}
+            {errorCounts.length === 0 && <span>Operasyon normal</span>}
           </div>
         </article>
         <article>
@@ -1258,12 +1270,22 @@ function ActivityPage({
             <Search size={16} />
             <input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value)
+                setActivityLimit(12)
+              }}
               placeholder="Model, istek ID veya hata kodu ara"
               aria-label="Aktivitede ara"
             />
           </label>
-          <select value={accountId} onChange={(event) => setAccountId(event.target.value)} aria-label="Hesaba göre filtrele">
+          <select
+            value={accountId}
+            onChange={(event) => {
+              setAccountId(event.target.value)
+              setActivityLimit(12)
+            }}
+            aria-label="Hesaba göre filtrele"
+          >
             <option value="all">Tüm hesaplar</option>
             {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
           </select>
@@ -1275,10 +1297,26 @@ function ActivityPage({
               { value: 'error', label: 'Hatalı' },
               { value: 'pending', label: 'Bekliyor' },
             ]}
-            onChange={setStatus}
+            onChange={(value) => {
+              setStatus(value)
+              setActivityLimit(12)
+            }}
           />
         </div>
-        <ActivityTable records={filtered} accountNames={accountNames} />
+        <ActivityTable records={visibleRecords} accountNames={accountNames} />
+        {filtered.length > 0 && (
+          <div className="activity-load-more">
+            <span>{formatNumber(visibleRecords.length)} / {formatNumber(filtered.length)} kayıt gösteriliyor</span>
+            {visibleRecords.length < filtered.length && (
+              <button
+                className="secondary-button compact"
+                onClick={() => setActivityLimit((current) => current + 12)}
+              >
+                12 kayıt daha göster
+              </button>
+            )}
+          </div>
+        )}
       </section>
     </>
   )
@@ -1310,25 +1348,25 @@ function SecurityPage({
   })
   const visibleAudit = filteredAudit.slice(0, auditLimit)
   const securityChecks = [
-    ['Credential storage', settings.security.credentialEncryption],
-    ['API key storage', settings.security.apiKeyStorage],
+    ['Oturum saklama', settings.security.credentialEncryption],
+    ['API anahtarı saklama', settings.security.apiKeyStorage],
     ['İstek gövdesi logları', settings.security.requestBodiesLogged ? 'Açık' : 'Kapalı'],
-    ['Özel provider', settings.security.customProvidersEnabled ? 'Açık' : 'Kapalı'],
+    ['Özel sağlayıcı', settings.security.customProvidersEnabled ? 'Açık' : 'Kapalı'],
     ['Uzak medya', settings.security.remoteMediaEnabled ? 'Açık' : 'Kapalı'],
-    ['Secure cookie', settings.security.secureCookies ? 'Zorunlu' : 'Geliştirme modu'],
+    ['Güvenli çerez', settings.security.secureCookies ? 'Zorunlu' : 'Geliştirme modu'],
   ]
 
   return (
     <>
       <PageIntro
-        eyebrow="Security posture"
+        eyebrow="Güvenlik durumu"
         title="Çalışma sınırları açık ve denetlenebilir"
         description="Runtime politikaları, yönlendirme stratejisi ve yönetici işlemleri tek ekranda."
       />
       <div className="security-overview">
         <section className="security-score-card">
           <div className="security-score"><ShieldCheck size={27} /><strong>6/6</strong></div>
-          <div><span className="eyebrow">Security baseline</span><h2>Koruma sınırları etkin</h2><p>Credential, API anahtarı ve request metadata politikaları beklenen durumda.</p></div>
+          <div><span className="eyebrow">Güvenlik standardı</span><h2>Koruma sınırları etkin</h2><p>Oturum, API anahtarı ve teknik istek kaydı politikaları beklenen durumda.</p></div>
         </section>
         <section className="session-card">
           <Clock3 size={22} />
@@ -2748,6 +2786,19 @@ function activityTone(status: RequestActivity['status']): 'success' | 'danger' |
 
 function activityStatusLabel(status: RequestActivity['status']): string {
   return status === 'success' ? 'Başarılı' : status === 'pending' ? 'Bekliyor' : 'Hatalı'
+}
+
+function activityErrorLabel(code: string): string {
+  const labels: Record<string, string> = {
+    no_available_account: 'Kullanılabilir hesap yok',
+    provider_rate_limited: 'Sağlayıcı isteği sınırladı',
+    provider_authentication_failed: 'Oturum doğrulanamadı',
+    provider_unavailable: 'Sağlayıcıya ulaşılamadı',
+    provider_timeout: 'Yanıt süresi aşıldı',
+    provider_protocol_changed: 'Bağlantı protokolü değişti',
+    unknown_error: 'Tanımlanamayan hata',
+  }
+  return labels[code] ?? code.replaceAll('_', ' ')
 }
 
 function auditActionLabel(action: string): string {

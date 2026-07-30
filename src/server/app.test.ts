@@ -151,6 +151,26 @@ describe('gateway HTTP security contract', () => {
     expect(csrfToken.length).toBeGreaterThan(20)
   })
 
+  it('reports daily and lifetime request success independently', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/admin/api/overview',
+      headers: { cookie: cookies },
+    })
+    const body = response.json<{
+      requests: {
+        successRate: number
+        todaySuccessRate: number
+      }
+    }>()
+
+    expect(response.statusCode).toBe(200)
+    expect(body.requests.successRate).toBeGreaterThanOrEqual(0)
+    expect(body.requests.successRate).toBeLessThanOrEqual(1)
+    expect(body.requests.todaySuccessRate).toBeGreaterThanOrEqual(0)
+    expect(body.requests.todaySuccessRate).toBeLessThanOrEqual(1)
+  })
+
   it('keeps deployment timeouts read-only and rejects ineffective settings', async () => {
     const settings = await app.inject({
       method: 'GET',
