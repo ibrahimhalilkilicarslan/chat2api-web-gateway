@@ -13,8 +13,11 @@ import {
   type AccountHealthResult,
 } from '../providers/account-health.js'
 import { accountHealthRegistry } from '../providers/account-health-registry.js'
+import { DeepSeekLinkSessionRegistry } from '../providers/deepseek-link-session.js'
 import type { AdminAuth } from '../security/admin-auth.js'
 import { isValidIpOrCidr } from '../security/ip-allowlist.js'
+
+const DEEPSEEK_CONNECTOR_ORIGIN = 'https://chat.deepseek.com'
 
 const loginSchema = z.object({
   token: z.string().min(1).max(512),
@@ -36,6 +39,18 @@ const accountCreateSchema = z.object({
 const accountCredentialValidationSchema = z.object({
   providerId: z.literal('deepseek'),
   credentials: providerCredentialSchema,
+}).strict()
+
+const deepSeekLinkCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  email: z.string().trim().email().max(254).optional().or(z.literal('')),
+  dailyLimit: z.number().int().min(1).max(1_000_000).optional(),
+}).strict()
+
+const deepSeekLinkCompletionSchema = z.object({
+  sessionId: z.string().uuid(),
+  secret: z.string().min(32).max(512),
+  token: z.string().min(1).max(16_384),
 }).strict()
 
 const accountUpdateSchema = z.object({
@@ -188,6 +203,8 @@ export async function registerAdminRoutes(
   concurrency: ConcurrencyGate,
   accountHealthChecker: AccountHealthChecker = checkProviderAccount,
 ): Promise<void> {
+  const deepSeekLinkSessions = new DeepSeekLinkSessionRegistry()
+
   app.post('/admin/api/login', {
     config: {
       rateLimit: {
@@ -325,6 +342,219 @@ export async function registerAdminRoutes(
         .getAccounts(false)
         .map((account) => safeAccount(account, cooldowns.get(account.id))),
     )
+  })
+
+  app.post('/admin/api/deepseek-link/sessions', {
+    preHandler: adminAuth.requireMutation,
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
+    const parsed = deepSeekLinkCreateSchema.safeParse(request.body)
+    const ownerNonce = request.adminSession?.nonce
+    const origin = request.headers.origin
+    if (!parsed.success || !ownerNonce || typeof origin !== 'string') {
+      return reply.code(400).send({
+        error: { code: 'invalid_request', message: 'Invalid DeepSeek connection details.' },
+      })
+    }
+
+    const created = deepSeekLinkSessions.create({
+      ownerNonce,
+      name: parsed.data.name,
+      email: parsed.data.email || undefined,
+      dailyLimit: parsed.data.dailyLimit,
+    })
+    registerSecret(created.secret)
+    const connectorCode = `c2a-ds-link-v1.${Buffer.from(JSON.stringify({
+      v: 1,
+      endpoint: `${origin}/admin/api/deepseek-link/complete`,
+      sessionId: created.session.id,
+      secret: created.secret,
+      expiresAt: created.session.expiresAt,
+    }), 'utf8').toString('base64url')}`
+    registerSecret(connectorCode)
+    storeManager.addAuditLog({
+      actor: 'admin',
+      action: 'account.link.start',
+      targetType: 'provider',
+      targetId: 'deepseek',
+      outcome: 'success',
+      metadata: {},
+    })
+
+    reply.header('Cache-Control', 'no-store')
+    return reply.code(201).send({
+      ...created.session,
+      connectorCode,
+    })
+  })
+
+  app.get('/admin/api/deepseek-link/sessions/:id', {
+    preHandler: adminAuth.requireSession,
+  }, async (request, reply) => {
+    const id = z.string().uuid().safeParse((request.params as { id?: unknown }).id)
+    const ownerNonce = request.adminSession?.nonce
+    if (!id.success || !ownerNonce) {
+      return reply.code(400).send({
+        error: { code: 'invalid_request', message: 'Invalid DeepSeek connection session.' },
+      })
+    }
+    const session = deepSeekLinkSessions.read(id.data, ownerNonce)
+    if (!session) {
+      return reply.code(404).send({
+        error: { code: 'not_found', message: 'DeepSeek connection session was not found.' },
+      })
+    }
+    reply.header('Cache-Control', 'no-store')
+    return reply.send(session)
+  })
+
+  app.delete('/admin/api/deepseek-link/sessions/:id', {
+    preHandler: adminAuth.requireMutation,
+  }, async (request, reply) => {
+    const id = z.string().uuid().safeParse((request.params as { id?: unknown }).id)
+    const ownerNonce = request.adminSession?.nonce
+    if (!id.success || !ownerNonce) {
+      return reply.code(400).send({
+        error: { code: 'invalid_request', message: 'Invalid DeepSeek connection session.' },
+      })
+    }
+    const cancelled = deepSeekLinkSessions.cancel(id.data, ownerNonce)
+    if (!cancelled) {
+      return reply.code(404).send({
+        error: { code: 'not_found', message: 'DeepSeek connection session was not found.' },
+      })
+    }
+    storeManager.addAuditLog({
+      actor: 'admin',
+      action: 'account.link.cancel',
+      targetType: 'provider',
+      targetId: 'deepseek',
+      outcome: 'success',
+      metadata: {},
+    })
+    return reply.code(204).send()
+  })
+
+  app.post('/admin/api/deepseek-link/complete', {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
+    reply.header('Access-Control-Allow-Origin', DEEPSEEK_CONNECTOR_ORIGIN)
+    reply.header('Cache-Control', 'no-store')
+    reply.header('Vary', 'Origin')
+    if (request.headers.origin !== DEEPSEEK_CONNECTOR_ORIGIN) {
+      return reply.code(403).send({
+        error: { code: 'origin_not_allowed', message: 'Connector origin is not allowed.' },
+      })
+    }
+
+    let payload: unknown = request.body
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload)
+      } catch {
+        payload = undefined
+      }
+    }
+    const parsed = deepSeekLinkCompletionSchema.safeParse(payload)
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: { code: 'invalid_request', message: 'Invalid connector payload.' },
+      })
+    }
+    registerSecret(parsed.data.secret)
+    registerSecret(parsed.data.token)
+    const claim = deepSeekLinkSessions.claim(parsed.data.sessionId, parsed.data.secret)
+    if (!claim) {
+      return reply.code(401).send({
+        error: { code: 'invalid_link_session', message: 'Connection session is invalid or expired.' },
+      })
+    }
+    if (claim.kind === 'complete') {
+      return reply.send({ status: 'complete', accountId: claim.accountId })
+    }
+    if (claim.kind === 'busy') {
+      return reply.code(409).send({
+        error: { code: 'link_session_busy', message: 'Connection validation is already running.' },
+      })
+    }
+
+    const credentials = normalizeProviderCredentials('deepseek', { token: parsed.data.token })
+    const credentialError = validateCredentialFields('deepseek', credentials, false)
+    if (credentialError) {
+      deepSeekLinkSessions.fail(claim.id, 'invalid_credentials', credentialError)
+      return reply.code(422).send({
+        error: { code: 'credential_validation_failed', message: credentialError },
+      })
+    }
+    registerSecret(credentials.token ?? '')
+    const provider = storeManager.getProviderById('deepseek')
+    if (!provider) {
+      deepSeekLinkSessions.fail(claim.id, 'provider_unavailable', 'DeepSeek provider is unavailable.')
+      return reply.code(503).send({
+        error: { code: 'provider_unavailable', message: 'DeepSeek provider is unavailable.' },
+      })
+    }
+
+    const now = Date.now()
+    const account: Account = {
+      id: storeManager.generateId(),
+      providerId: 'deepseek',
+      name: claim.name,
+      email: claim.email,
+      credentials,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+      requestCount: 0,
+      dailyLimit: claim.dailyLimit,
+      todayUsed: 0,
+    }
+    const health = await accountHealthChecker(provider, account)
+    if (!health.healthy) {
+      deepSeekLinkSessions.fail(claim.id, health.code, health.message)
+      storeManager.addAuditLog({
+        actor: 'deepseek-connector',
+        action: 'account.link.complete',
+        targetType: 'provider',
+        targetId: 'deepseek',
+        outcome: 'failure',
+        metadata: { healthCode: health.code },
+      })
+      return reply.code(422).send({
+        error: { code: 'credential_validation_failed', message: health.message },
+      })
+    }
+
+    try {
+      storeManager.addAccount(account)
+      accountHealthRegistry.record(account.id, health)
+      deepSeekLinkSessions.complete(claim.id, account.id)
+    } catch (error) {
+      deepSeekLinkSessions.fail(claim.id, 'account_persistence_failed', 'Account could not be saved.')
+      throw error
+    }
+    storeManager.addAuditLog({
+      actor: 'deepseek-connector',
+      action: 'account.link.complete',
+      targetType: 'account',
+      targetId: account.id,
+      outcome: 'success',
+      metadata: { providerId: 'deepseek' },
+    })
+    return reply.code(201).send({
+      status: 'complete',
+      accountId: account.id,
+    })
   })
 
   app.post('/admin/api/accounts/validate-credentials', {
@@ -578,6 +808,10 @@ export async function registerAdminRoutes(
     })
     accountHealthRegistry.delete(id.data)
     return reply.code(204).send()
+  })
+
+  app.addHook('onClose', async () => {
+    deepSeekLinkSessions.clear()
   })
 
   app.get('/admin/api/api-keys', { preHandler: adminAuth.requireSession }, async (_request, reply) => {

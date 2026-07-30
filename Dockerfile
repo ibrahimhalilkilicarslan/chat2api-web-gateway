@@ -18,6 +18,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 COPY tsconfig*.json tsup.config.ts vite.config.ts vitest.config.ts eslint.config.js ./
 COPY scripts ./scripts
 COPY src ./src
+COPY tools ./tools
 COPY sha3_wasm_bg.7b9ca65ddd.wasm ./
 
 RUN pnpm lint \

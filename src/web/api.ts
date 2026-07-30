@@ -5,6 +5,7 @@ import type {
   ApiKeyRecord,
   AuditEvent,
   DashboardData,
+  DeepSeekLinkSession,
   GatewaySettings,
   MaintenanceStatus,
   Overview,
@@ -119,6 +120,27 @@ export function validateAccountCredentials(input: {
   return request('/admin/api/accounts/validate-credentials', {
     method: 'POST',
     body: JSON.stringify(input),
+  })
+}
+
+export function startDeepSeekLink(input: {
+  name: string
+  email?: string
+  dailyLimit?: number
+}): Promise<DeepSeekLinkSession & { connectorCode: string }> {
+  return request('/admin/api/deepseek-link/sessions', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function getDeepSeekLink(id: string): Promise<DeepSeekLinkSession> {
+  return request(`/admin/api/deepseek-link/sessions/${encodeURIComponent(id)}`)
+}
+
+export function cancelDeepSeekLink(id: string): Promise<void> {
+  return request(`/admin/api/deepseek-link/sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
   })
 }
 

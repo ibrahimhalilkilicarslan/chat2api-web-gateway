@@ -9,6 +9,7 @@ import {
   Clock3,
   Command,
   Copy,
+  DownloadCloud,
   Database,
   Download,
   Eye,
@@ -24,6 +25,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  PlugZap,
   Plus,
   RefreshCw,
   Search,
@@ -42,16 +44,19 @@ import {
 } from 'react'
 import {
   ApiError,
+  cancelDeepSeekLink,
   createAccount,
   createApiKey,
   deleteAccount,
   deleteApiKey,
   getSession,
+  getDeepSeekLink,
   loadDashboard,
   login,
   logout,
   downloadAuditCsv,
   rotateApiKey,
+  startDeepSeekLink,
   testAccount,
   updateAccount,
   updateApiKey,
@@ -64,6 +69,7 @@ import type {
   ApiKeyRecord,
   AuditEvent,
   DashboardData,
+  DeepSeekLinkSession,
   GatewaySettings,
   Provider,
   RequestActivity,
@@ -490,6 +496,11 @@ export function App() {
           provider={accountProvider}
           busy={busy}
           onClose={() => setAccountProvider(null)}
+          onLinked={async () => {
+            setNotice(`${accountProvider.name} hesabı güvenli bağlantıyla eklendi.`)
+            await refresh(true)
+            setAccountProvider(null)
+          }}
           onSubmit={async (input) => {
             const completed = await run(
               () => createAccount({ ...input, dailyLimit: input.dailyLimit ?? undefined }),
@@ -505,6 +516,10 @@ export function App() {
           account={editingAccount}
           busy={busy}
           onClose={() => setEditingAccount(null)}
+          onLinked={async () => {
+            await refresh(true)
+            setEditingAccount(null)
+          }}
           onSubmit={async (input) => {
             const completed = await run(
               () => updateAccount(editingAccount.id, {
@@ -1463,6 +1478,7 @@ function AccountPanel(props: {
   account?: Account
   busy: boolean
   onClose: () => void
+  onLinked: () => Promise<void>
   onSubmit: (input: {
     providerId: string
     name: string
@@ -1480,6 +1496,16 @@ function AccountPanel(props: {
   const [validating, setValidating] = useState(false)
   const [showCredential, setShowCredential] = useState(false)
   const [providerOpened, setProviderOpened] = useState(false)
+  const [connectionMode, setConnectionMode] = useState<'automatic' | 'manual'>(
+    props.account ? 'manual' : 'automatic',
+  )
+  const [linkSession, setLinkSession] = useState<
+    (DeepSeekLinkSession & { connectorCode?: string }) | null
+  >(null)
+  const [linkStarting, setLinkStarting] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
+  const [linkError, setLinkError] = useState<string | null>(null)
+  const linkedReported = useRef(false)
   const isEditing = Boolean(props.account)
   const credentialUpdates = Object.fromEntries(
     Object.entries(credentials).filter(([, value]) => value.trim().length > 0),
@@ -1490,6 +1516,40 @@ function AccountPanel(props: {
     && !props.busy
     && !validating
     && (!validationRequired || validation?.healthy)
+
+  useEffect(() => {
+    if (
+      !linkSession
+      || ['complete', 'cancelled', 'expired'].includes(linkSession.status)
+    ) {
+      return
+    }
+    let disposed = false
+    const poll = async () => {
+      try {
+        const current = await getDeepSeekLink(linkSession.id)
+        if (disposed) return
+        setLinkSession((previous) => ({
+          ...current,
+          connectorCode: previous?.connectorCode,
+        }))
+        if (current.status === 'complete' && !linkedReported.current) {
+          linkedReported.current = true
+          await props.onLinked()
+        }
+      } catch (cause) {
+        if (!disposed) {
+          setLinkError(cause instanceof Error ? cause.message : 'Bağlantı durumu alınamadı.')
+        }
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 1_500)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [linkSession?.id, linkSession?.status, props.onLinked])
 
   const setCredential = (field: string, value: string) => {
     setCredentials((current) => ({ ...current, [field]: value }))
@@ -1524,18 +1584,77 @@ function AccountPanel(props: {
     }
   }
 
+  const copyConnectorCode = async (value = linkSession?.connectorCode) => {
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setLinkCopied(true)
+      setLinkError(null)
+    } catch {
+      setLinkCopied(false)
+      setLinkError('Bağlantı kodu panoya alınamadı. Kopyala düğmesini tekrar deneyin.')
+    }
+  }
+
+  const startAutomaticLink = async () => {
+    if (!name.trim()) {
+      setLinkError('Önce hesap etiketini girin.')
+      return
+    }
+    const providerWindow = window.open('about:blank', '_blank')
+    if (providerWindow) providerWindow.opener = null
+    setLinkStarting(true)
+    setLinkError(null)
+    setLinkCopied(false)
+    try {
+      const started = await startDeepSeekLink({
+        name: name.trim(),
+        email: email.trim() || undefined,
+        dailyLimit: dailyLimit ? Number(dailyLimit) : undefined,
+      })
+      setLinkSession(started)
+      await copyConnectorCode(started.connectorCode)
+      if (providerWindow) {
+        providerWindow.location.replace('https://chat.deepseek.com/')
+      }
+      setProviderOpened(true)
+    } catch (cause) {
+      providerWindow?.close()
+      setLinkError(cause instanceof Error ? cause.message : 'Güvenli bağlantı başlatılamadı.')
+    } finally {
+      setLinkStarting(false)
+    }
+  }
+
+  const cancelAutomaticLink = async () => {
+    if (linkSession && !['complete', 'cancelled', 'expired'].includes(linkSession.status)) {
+      await cancelDeepSeekLink(linkSession.id).catch(() => undefined)
+    }
+    setLinkSession(null)
+    setLinkError(null)
+    setLinkCopied(false)
+    linkedReported.current = false
+  }
+
+  const closePanel = () => {
+    if (linkSession && !['complete', 'cancelled', 'expired'].includes(linkSession.status)) {
+      void cancelDeepSeekLink(linkSession.id).catch(() => undefined)
+    }
+    props.onClose()
+  }
+
   return (
     <Modal
       title={isEditing ? 'DeepSeek hesabını düzenle' : 'DeepSeek hesabı ekle'}
       subtitle={isEditing
         ? 'Şifreli değerler gösterilmez. Token değişikliği kaydedilmeden önce yeniden doğrulanır.'
-        : 'DeepSeek oturumunu doğrulayın; geçersiz token hiçbir zaman kaydedilmez.'}
-      onClose={props.onClose}
+        : 'Girişi DeepSeek üzerinde tamamlayın; yardımcı uzantı oturumu güvenle doğrulasın.'}
+      onClose={closePanel}
       drawer
     >
       <form className="drawer-form" onSubmit={(event) => {
         event.preventDefault()
-        if (!canSubmit) return
+        if (connectionMode !== 'manual' || !canSubmit) return
         void props.onSubmit({
           providerId: props.provider.id,
           name,
@@ -1546,121 +1665,14 @@ function AccountPanel(props: {
       }}>
         {!isEditing && (
           <div className="onboarding-progress" aria-label="Hesap bağlantı adımları">
-            <span className={providerOpened ? 'complete' : ''}><i>{providerOpened ? <Check size={13} /> : '1'}</i><strong>DeepSeek girişi</strong></span>
-            <span className={hasCredentialUpdates ? 'complete' : ''}><i>{hasCredentialUpdates ? <Check size={13} /> : '2'}</i><strong>Oturum tokenı</strong></span>
-            <span className={validation?.healthy ? 'complete' : ''}><i>{validation?.healthy ? <Check size={13} /> : '3'}</i><strong>Doğrulama</strong></span>
-          </div>
-        )}
-        {!isEditing && (
-          <div className="provider-login-card">
-            <div className="provider-login-icon"><ExternalLink size={20} /></div>
-            <div>
-              <strong>DeepSeek hesabınızda oturum açın</strong>
-              <p>Giriş yalnız DeepSeek’in kendi sayfasında tamamlanır. E-posta veya parolanız bu uygulamaya girilmez.</p>
-            </div>
-            <a
-              className="secondary-button compact"
-              href="https://chat.deepseek.com/"
-              target="_blank"
-              rel="noreferrer noopener"
-              onClick={() => setProviderOpened(true)}
-            >
-              DeepSeek’i aç <ExternalLink size={14} />
-            </a>
+            <span className={providerOpened ? 'complete' : ''}><i>{providerOpened ? <Check size={13} /> : '1'}</i><strong>DeepSeek sekmesi</strong></span>
+            <span className={linkSession || hasCredentialUpdates ? 'complete' : ''}><i>{linkSession || hasCredentialUpdates ? <Check size={13} /> : '2'}</i><strong>Güvenli aktarım</strong></span>
+            <span className={linkSession?.status === 'complete' || validation?.healthy ? 'complete' : ''}><i>{linkSession?.status === 'complete' || validation?.healthy ? <Check size={13} /> : '3'}</i><strong>Doğrulama</strong></span>
           </div>
         )}
         <div className="form-section">
-          <div className="form-section-head"><span>{isEditing ? '01' : '02'}</span><div><strong>Web oturumu</strong><small>Token yalnız şifreli kasaya kaydedilir ve tekrar gösterilmez</small></div></div>
-          <div className="credential-box">
-            <div><LockKeyhole size={16} /><span>AES-256-GCM encrypted storage</span></div>
-            {props.provider.credentialFields.map((field) => (
-              <Field key={field.name} label={`${field.label}${field.required ? ' *' : ''}`} hint={field.helpText}>
-                {field.type === 'textarea' ? (
-                  <textarea
-                    value={credentials[field.name] ?? ''}
-                    onChange={(event) => setCredential(field.name, event.target.value)}
-                    required={!isEditing && field.required}
-                    rows={5}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder={field.placeholder}
-                  />
-                ) : (
-                  <div className="secret-input">
-                    <input
-                      type={field.type === 'password' && showCredential ? 'text' : field.type}
-                      value={credentials[field.name] ?? ''}
-                      onChange={(event) => setCredential(field.name, event.target.value)}
-                      required={!isEditing && field.required}
-                      autoComplete="off"
-                      placeholder={field.placeholder}
-                    />
-                    {field.type === 'password' && (
-                      <button
-                        type="button"
-                        onClick={() => setShowCredential((visible) => !visible)}
-                        aria-label={showCredential ? 'Tokenı gizle' : 'Tokenı göster'}
-                      >
-                        {showCredential ? <EyeOff size={16} /> : <Eye size={16} />}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </Field>
-            ))}
-            <details className="onboarding-help">
-              <summary>Oturum tokenını nasıl bulurum?</summary>
-              <ol>
-                <li>DeepSeek sekmesinde hesabınıza giriş yapın.</li>
-                <li>Tarayıcı geliştirici araçlarında Network panelini açıp sayfayı yenileyin.</li>
-                <li><code>users/current</code> isteğinin Request Headers bölümündeki <code>Authorization</code> değerini kopyalayın.</li>
-                <li><code>Bearer</code> ön ekiyle birlikte veya yalnız token değerini bu alana yapıştırabilirsiniz.</li>
-              </ol>
-              <p>Yalnız size ait ve bu gateway için ayrılmış bir hesabı kullanın. Parola, cookie dosyası veya HAR yüklemeyin.</p>
-            </details>
-          </div>
-        </div>
-        <div className="form-section">
-          <div className="form-section-head"><span>{isEditing ? '02' : '03'}</span><div><strong>Doğrulama ve hesap ayarları</strong><small>Bağlantıyı sınayın, ardından operasyon etiketini belirleyin</small></div></div>
-          <div className="connection-check">
-            <div>
-              <span className={`connection-check-icon ${validation?.healthy ? 'success' : validationError ? 'danger' : ''}`}>
-                {validating
-                  ? <RefreshCw size={17} className="spin" />
-                  : validation?.healthy
-                  ? <Check size={17} />
-                  : <Activity size={17} />}
-              </span>
-              <div>
-                <strong>{validation?.healthy
-                  ? 'Oturum doğrulandı'
-                  : validationError
-                  ? 'Bağlantı doğrulanamadı'
-                  : hasCredentialUpdates
-                  ? 'Doğrulamaya hazır'
-                  : isEditing
-                  ? 'Mevcut token korunacak'
-                  : 'Token bekleniyor'}</strong>
-                <small>{validation?.healthy
-                  ? `${validation.message} · ${validation.latencyMs} ms`
-                  : validationError
-                  ?? (isEditing && !hasCredentialUpdates
-                    ? 'Tokenı değiştirmiyorsanız yeniden doğrulama gerekmez.'
-                    : 'Kayıttan önce credential-only sağlık kontrolü yapılır.')}</small>
-              </div>
-            </div>
-            {hasCredentialUpdates && (
-              <button
-                type="button"
-                className="secondary-button compact"
-                onClick={() => void validateCredentials()}
-                disabled={validating}
-              >
-                {validating ? 'Kontrol ediliyor' : validation?.healthy ? 'Tekrar doğrula' : 'Bağlantıyı doğrula'}
-              </button>
-            )}
-          </div>
-          <Field label="Hesap etiketi">
+          <div className="form-section-head"><span>01</span><div><strong>Hesap ayarları</strong><small>Bağlantıyı ayırt etmek için operasyon bilgileri</small></div></div>
+          <Field label="Hesap etiketi *">
             <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Örn. Ana DeepSeek hesabı" />
           </Field>
           <div className="form-grid">
@@ -1672,11 +1684,226 @@ function AccountPanel(props: {
             </Field>
           </div>
         </div>
+        {!isEditing && (
+          <div className="form-section">
+            <div className="form-section-head"><span>02</span><div><strong>Bağlantı yöntemi</strong><small>Otomatik aktarım önerilir; manuel token yedek yöntemdir</small></div></div>
+            <SegmentedControl
+              value={connectionMode}
+              options={[
+                { value: 'automatic', label: 'Otomatik bağla' },
+                { value: 'manual', label: 'Manuel token' },
+              ]}
+              onChange={(value) => {
+                if (value !== connectionMode) void cancelAutomaticLink()
+                setConnectionMode(value)
+              }}
+            />
+          </div>
+        )}
+        {connectionMode === 'automatic' && !isEditing ? (
+          <div className="form-section">
+            <div className="form-section-head"><span>03</span><div><strong>DeepSeek ile güvenli bağlantı</strong><small>Parola ve oturum tokenı admin ekranına girilmez</small></div></div>
+            <div className="connector-card">
+              <div className="connector-card-head">
+                <span><PlugZap size={19} /></span>
+                <div>
+                  <strong>Session Connector</strong>
+                  <p>Chrome veya Edge uzantısı, yalnız başlattığınız beş dakikalık bağlantı sırasında oturumu aktarır.</p>
+                </div>
+                <a
+                  className="secondary-button compact"
+                  href="/admin/downloads/deepseek-session-connector-v1.0.0.zip"
+                  download
+                >
+                  <DownloadCloud size={14} /> Uzantıyı indir
+                </a>
+              </div>
+              <details className="connector-install-help">
+                <summary>Bir kerelik uzantı kurulumu</summary>
+                <ol>
+                  <li>ZIP dosyasını çıkarın.</li>
+                  <li>Chrome için <code>chrome://extensions</code>, Edge için <code>edge://extensions</code> sayfasını açın.</li>
+                  <li>Geliştirici modunu açıp <strong>Paketlenmemiş öğe yükle</strong> ile klasörü seçin.</li>
+                  <li>Session Connector uzantısını araç çubuğuna sabitleyin.</li>
+                </ol>
+              </details>
+              {!linkSession ? (
+                <button
+                  type="button"
+                  className="primary-button connector-start"
+                  onClick={() => void startAutomaticLink()}
+                  disabled={linkStarting || !name.trim()}
+                >
+                  {linkStarting
+                    ? <><RefreshCw size={16} className="spin" /> Bağlantı hazırlanıyor</>
+                    : <><PlugZap size={16} /> DeepSeek ile bağlan</>}
+                </button>
+              ) : (
+                <div className={`connector-status ${linkSession.status}`}>
+                  <span>
+                    {linkSession.status === 'complete'
+                      ? <Check size={18} />
+                      : linkSession.status === 'validating'
+                      ? <RefreshCw size={18} className="spin" />
+                      : linkSession.status === 'expired'
+                      ? <AlertTriangle size={18} />
+                      : <Clock3 size={18} />}
+                  </span>
+                  <div>
+                    <strong>{linkSession.status === 'complete'
+                      ? 'Hesap bağlandı'
+                      : linkSession.status === 'validating'
+                      ? 'Oturum doğrulanıyor'
+                      : linkSession.status === 'expired'
+                      ? 'Bağlantı süresi doldu'
+                      : 'DeepSeek girişi bekleniyor'}</strong>
+                    <small>{linkSession.status === 'complete'
+                      ? 'Token doğrulandı ve doğrudan şifreli kasaya kaydedildi.'
+                      : linkSession.errorMessage
+                      ?? 'Uzantıyı DeepSeek sekmesinde açın. Giriş tamamlandığında aktarım otomatik yapılır.'}</small>
+                  </div>
+                  {linkSession.status !== 'complete' && linkSession.connectorCode && (
+                    <button
+                      type="button"
+                      className="secondary-button compact"
+                      onClick={() => void copyConnectorCode()}
+                    >
+                      {linkCopied ? <Check size={14} /> : <Copy size={14} />}
+                      {linkCopied ? 'Kod panoda' : 'Kodu kopyala'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {linkSession && !['complete', 'expired'].includes(linkSession.status) && (
+                <div className="connector-actions">
+                  <a
+                    className="secondary-button compact"
+                    href="https://chat.deepseek.com/"
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    onClick={() => setProviderOpened(true)}
+                  >
+                    DeepSeek’i aç <ExternalLink size={14} />
+                  </a>
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => void cancelAutomaticLink()}
+                  >
+                    Bağlantıyı iptal et
+                  </button>
+                </div>
+              )}
+              {linkError && <p className="connector-error">{linkError}</p>}
+              <p className="connector-privacy">
+                Uzantı parola, cookie arşivi veya tarama geçmişi okuyamaz. Web tokenı uzantı deposuna yazılmaz ve yalnız bu gateway’in tek kullanımlık endpointine gönderilir.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="form-section">
+              <div className="form-section-head"><span>{isEditing ? '02' : '03'}</span><div><strong>Web oturumu</strong><small>Token yalnız şifreli kasaya kaydedilir ve tekrar gösterilmez</small></div></div>
+              <div className="credential-box">
+                <div><LockKeyhole size={16} /><span>AES-256-GCM encrypted storage</span></div>
+                {props.provider.credentialFields.map((field) => (
+                  <Field key={field.name} label={`${field.label}${field.required ? ' *' : ''}`} hint={field.helpText}>
+                    {field.type === 'textarea' ? (
+                      <textarea
+                        value={credentials[field.name] ?? ''}
+                        onChange={(event) => setCredential(field.name, event.target.value)}
+                        required={!isEditing && field.required}
+                        rows={5}
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder={field.placeholder}
+                      />
+                    ) : (
+                      <div className="secret-input">
+                        <input
+                          type={field.type === 'password' && showCredential ? 'text' : field.type}
+                          value={credentials[field.name] ?? ''}
+                          onChange={(event) => setCredential(field.name, event.target.value)}
+                          required={!isEditing && field.required}
+                          autoComplete="off"
+                          placeholder={field.placeholder}
+                        />
+                        {field.type === 'password' && (
+                          <button
+                            type="button"
+                            onClick={() => setShowCredential((visible) => !visible)}
+                            aria-label={showCredential ? 'Tokenı gizle' : 'Tokenı göster'}
+                          >
+                            {showCredential ? <EyeOff size={16} /> : <Eye size={16} />}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </Field>
+                ))}
+                <details className="onboarding-help">
+                  <summary>Manuel token nasıl bulunur?</summary>
+                  <ol>
+                    <li>DeepSeek sekmesinde hesabınıza giriş yapın.</li>
+                    <li>Network panelinde <code>users/current</code> isteğini açın.</li>
+                    <li><code>Authorization</code> değerini bu alana yapıştırın.</li>
+                  </ol>
+                  <p>Parola, cookie dosyası veya HAR yüklemeyin.</p>
+                </details>
+              </div>
+            </div>
+            <div className="form-section">
+              <div className="form-section-head"><span>{isEditing ? '03' : '04'}</span><div><strong>Bağlantı doğrulaması</strong><small>Geçersiz token kaydedilmez</small></div></div>
+              <div className="connection-check">
+                <div>
+                  <span className={`connection-check-icon ${validation?.healthy ? 'success' : validationError ? 'danger' : ''}`}>
+                    {validating
+                      ? <RefreshCw size={17} className="spin" />
+                      : validation?.healthy
+                      ? <Check size={17} />
+                      : <Activity size={17} />}
+                  </span>
+                  <div>
+                    <strong>{validation?.healthy
+                      ? 'Oturum doğrulandı'
+                      : validationError
+                      ? 'Bağlantı doğrulanamadı'
+                      : hasCredentialUpdates
+                      ? 'Doğrulamaya hazır'
+                      : isEditing
+                      ? 'Mevcut token korunacak'
+                      : 'Token bekleniyor'}</strong>
+                    <small>{validation?.healthy
+                      ? `${validation.message} · ${validation.latencyMs} ms`
+                      : validationError
+                      ?? (isEditing && !hasCredentialUpdates
+                        ? 'Tokenı değiştirmiyorsanız yeniden doğrulama gerekmez.'
+                        : 'Kayıttan önce yalnız credential sağlık kontrolü yapılır.')}</small>
+                  </div>
+                </div>
+                {hasCredentialUpdates && (
+                  <button
+                    type="button"
+                    className="secondary-button compact"
+                    onClick={() => void validateCredentials()}
+                    disabled={validating}
+                  >
+                    {validating ? 'Kontrol ediliyor' : validation?.healthy ? 'Tekrar doğrula' : 'Bağlantıyı doğrula'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
         <div className="modal-actions">
-          <button type="button" className="secondary-button" onClick={props.onClose}>Vazgeç</button>
-          <button className="primary-button" disabled={!canSubmit}>
-            {props.busy ? <><RefreshCw size={16} className="spin" /> Kaydediliyor</> : isEditing ? 'Değişiklikleri kaydet' : 'Doğrulanmış hesabı ekle'}
+          <button type="button" className="secondary-button" onClick={closePanel}>
+            {connectionMode === 'automatic' && linkSession?.status === 'complete' ? 'Kapat' : 'Vazgeç'}
           </button>
+          {connectionMode === 'manual' && (
+            <button className="primary-button" disabled={!canSubmit}>
+              {props.busy ? <><RefreshCw size={16} className="spin" /> Kaydediliyor</> : isEditing ? 'Değişiklikleri kaydet' : 'Doğrulanmış hesabı ekle'}
+            </button>
+          )}
         </div>
       </form>
     </Modal>
@@ -2205,7 +2432,7 @@ function SegmentedControl<T extends string>({
   options: Array<{ value: T; label: string }>
   onChange: (value: T) => void
 }) {
-  return <div className="segmented-control">{options.map((option) => <button className={option.value === value ? 'active' : ''} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>
+  return <div className="segmented-control">{options.map((option) => <button type="button" className={option.value === value ? 'active' : ''} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>
 }
 
 function PanelHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {

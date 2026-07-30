@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepSeek Session Connector</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark" aria-hidden="true">C2</span>
+        <div>
+          <strong>Session Connector</strong>
+          <small>DeepSeek → Chat2API</small>
+        </div>
+      </header>
+
+      <section class="status-card" id="status-card" data-state="idle">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div>
+          <strong id="status-title">Bağlantı bekleniyor</strong>
+          <p id="status-message">Admin panelindeki bağlantı kodunu panoya kopyalayın.</p>
+        </div>
+      </section>
+
+      <section id="code-step">
+        <label for="connector-code">Tek kullanımlık bağlantı kodu</label>
+        <textarea
+          id="connector-code"
+          rows="3"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Admin panelindeki kodu buraya yapıştırın veya panodan alın."
+        ></textarea>
+        <button class="secondary" id="read-clipboard">Panodaki kodu kullan</button>
+      </section>
+
+      <section class="gateway-preview" id="gateway-preview" hidden>
+        <span>Bağlanılacak gateway</span>
+        <strong id="gateway-host"></strong>
+        <small id="gateway-expiry"></small>
+      </section>
+
+      <button class="primary" id="start-connection" disabled>Bağlantıyı başlat</button>
+
+      <div class="active-actions" id="active-actions" hidden>
+        <button class="secondary" id="open-deepseek">DeepSeek’i aç</button>
+        <button class="text-button" id="cancel-connection">İptal et</button>
+      </div>
+
+      <p class="privacy">
+        Parolanız okunmaz. Web tokenı uzantı deposuna kaydedilmez ve yalnız onayladığınız gateway’e tek sefer gönderilir.
+      </p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

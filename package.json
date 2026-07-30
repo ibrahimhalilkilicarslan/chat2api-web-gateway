@@ -18,7 +18,7 @@
     "dev:server": "tsx watch src/server/bootstrap.ts",
     "dev:web": "vite --host 0.0.0.0",
     "build": "pnpm clean && pnpm build:web && pnpm build:server && pnpm copy:runtime-assets",
-    "build:web": "vite build",
+    "build:web": "vite build && node scripts/package-deepseek-connector.mjs",
     "build:server": "tsup",
     "copy:runtime-assets": "node scripts/copy-runtime-assets.mjs",
     "clean": "node scripts/clean.mjs",

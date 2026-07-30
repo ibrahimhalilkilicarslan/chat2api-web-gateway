@@ -170,6 +170,16 @@ async function run() {
     for (const path of adminAssetPaths) {
       await expectStatus(new URL(path, baseUrl).toString(), 200)
     }
+    const connectorPackage = await expectStatus(
+      `${baseUrl}/admin/downloads/deepseek-session-connector-v1.0.0.zip`,
+      200,
+    )
+    const connectorBytes = Buffer.from(await connectorPackage.arrayBuffer())
+    assert.equal(
+      connectorBytes.subarray(0, 4).toString('hex'),
+      '504b0304',
+      'DeepSeek connector package is not a ZIP archive.',
+    )
     await expectStatus(`${baseUrl}/admin/api/login`, 403, {
       method: 'POST',
       headers: {
@@ -321,6 +331,7 @@ async function run() {
       apiAuthentication: 'pass',
       unsupportedFeatureRejection: 'pass',
       adminAssets: 'pass',
+      connectorPackage: 'pass',
       adminSessionAndCsrf: 'pass',
       nonRoot: 'pass',
       readOnlyRootFilesystem: 'pass',

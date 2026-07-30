@@ -141,6 +141,34 @@ for (const obsoletePath of [
   }
 }
 
+const connectorRoot = resolve(root, 'tools/deepseek-session-connector')
+const connectorManifest = JSON.parse(readFileSync(resolve(connectorRoot, 'manifest.json'), 'utf8'))
+const connectorWorker = readFileSync(resolve(connectorRoot, 'service-worker.js'), 'utf8')
+const adminRoutes = readFileSync(resolve(root, 'src/server/routes/admin.ts'), 'utf8')
+for (const permission of ['cookies', 'webRequest', 'webRequestBlocking', 'history', 'downloads']) {
+  if (connectorManifest.permissions?.includes(permission)) {
+    fail(`DeepSeek connector requests prohibited permission: ${permission}`)
+  }
+}
+if (
+  JSON.stringify(connectorManifest.host_permissions)
+  !== JSON.stringify(['https://chat.deepseek.com/*'])
+) {
+  fail('DeepSeek connector host permissions exceed the fixed provider origin')
+}
+if (/console\./.test(connectorWorker)) {
+  fail('DeepSeek connector contains runtime console diagnostics')
+}
+if (/chrome\.storage\.[a-z]+\.set\(\s*\{[^}]*\btoken\s*:/i.test(connectorWorker)) {
+  fail('DeepSeek connector may persist the provider token')
+}
+if (
+  !adminRoutes.includes("const DEEPSEEK_CONNECTOR_ORIGIN = 'https://chat.deepseek.com'")
+  || !adminRoutes.includes('request.headers.origin !== DEEPSEEK_CONNECTOR_ORIGIN')
+) {
+  fail('DeepSeek connector completion route is not bound to the fixed provider origin')
+}
+
 const bundlePath = resolve(root, 'dist/server/bootstrap.js')
 if (existsSync(bundlePath)) {
   const bundle = readFileSync(bundlePath, 'utf8')

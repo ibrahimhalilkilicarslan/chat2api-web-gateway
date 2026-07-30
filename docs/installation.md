@@ -89,16 +89,25 @@ obsolete backups after validating the replacement.
 
 1. Open `/admin/`.
 2. Sign in with the locally retrieved admin token.
-3. Use `DeepSeek’i aç` to sign in on DeepSeek's own page; the gateway never asks
-   for the account password.
-4. Paste only the authorized dedicated account's web session token and complete
-   `Bağlantıyı doğrula`. Invalid credentials are not persisted.
-5. Create a separate API key for each client with the minimum scopes, model
+3. Download the Session Connector ZIP from `DeepSeek hesabı ekle`, extract it,
+   and load the folder once from `chrome://extensions` or `edge://extensions`
+   using `Paketlenmemiş öğe yükle`.
+4. Select `Otomatik bağla`, enter an account label, and choose
+   `DeepSeek ile bağlan`. The console creates a five-minute link, copies it to
+   the clipboard, and opens DeepSeek.
+5. Open the pinned Session Connector, use the clipboard link, verify the exact
+   gateway hostname, and start the connection.
+6. Complete login only on DeepSeek's page. The connector transfers the web
+   session after login without reading the password or persisting the token in
+   extension storage. Invalid credentials are not saved.
+7. If the extension cannot be installed, use `Manuel token` as the documented
+   recovery flow. Never upload cookies or HAR files.
+8. Create a separate API key for each client with the minimum scopes, model
    allowlist, expiry, quota, and stable egress IP/CIDR policy.
-6. Store each raw client key immediately; it is shown once.
-7. Send one non-sensitive JSON request.
-8. Send one non-sensitive streaming request.
-9. Confirm the overview reports operational traffic readiness and activity
+9. Store each raw client key immediately; it is shown once.
+10. Send one non-sensitive JSON request.
+11. Send one non-sensitive streaming request.
+12. Confirm the overview reports operational traffic readiness and activity
    metadata contains no prompt or response content.
 
 ## Coolify

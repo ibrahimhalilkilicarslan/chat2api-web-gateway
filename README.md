@@ -49,8 +49,11 @@ It never prints the generated admin token. Retrieve it locally only when needed:
 ./scripts/show-admin-token.sh
 ```
 
-Open `https://gateway.example.com/admin/`, sign in, add a dedicated DeepSeek web
-session, run the credential health check, and create a client API key.
+Open `https://gateway.example.com/admin/`, sign in, install the optional Session
+Connector from the account drawer, and link a dedicated DeepSeek web session.
+The five-minute flow validates the session before encrypted storage; manual
+token entry remains a fallback. Then run the credential health check and create
+a client API key.
 
 For configuration-only setup:
 

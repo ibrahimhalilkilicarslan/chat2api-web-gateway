@@ -713,6 +713,76 @@ td small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px;
 .onboarding-help ol { margin: 11px 0 8px; padding-left: 19px; color: #8da2ac; font-size: 8px; line-height: 1.75; }
 .onboarding-help code { color: #a9e7d6; }
 .onboarding-help p { margin: 0; color: #718690; font-size: 8px; line-height: 1.55; }
+.connector-card {
+  padding: 15px;
+  border: 1px solid rgba(75, 216, 238, .17);
+  border-radius: 13px;
+  background:
+    radial-gradient(circle at 100% 0, rgba(75, 216, 238, .07), transparent 42%),
+    rgba(7, 15, 19, .55);
+}
+.connector-card-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+}
+.connector-card-head > span {
+  width: 39px;
+  height: 39px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(75, 216, 238, .15);
+  border-radius: 11px;
+  color: var(--cyan);
+  background: rgba(75, 216, 238, .07);
+}
+.connector-card-head strong { display: block; font-size: 11px; }
+.connector-card-head p { margin: 4px 0 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.connector-card-head a { text-decoration: none; white-space: nowrap; }
+.connector-install-help {
+  margin: 13px 0;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, .018);
+}
+.connector-install-help summary { color: #9cb2bc; font-size: 9px; font-weight: 680; cursor: pointer; }
+.connector-install-help ol { margin: 10px 0 0; padding-left: 18px; font-size: 8px; line-height: 1.75; }
+.connector-install-help code { color: #a9e7d6; }
+.connector-start { width: 100%; justify-content: center; }
+.connector-status {
+  min-height: 68px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
+  background: #09151a;
+}
+.connector-status > span {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--cyan);
+  background: rgba(75, 216, 238, .08);
+}
+.connector-status.complete { border-color: rgba(53, 224, 177, .22); background: rgba(53, 224, 177, .04); }
+.connector-status.complete > span { color: #04130e; background: var(--accent); }
+.connector-status.expired > span { color: #ffc0ca; background: rgba(255, 113, 134, .1); }
+.connector-status strong { display: block; font-size: 10px; }
+.connector-status small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.connector-actions { margin-top: 10px; display: flex; align-items: center; gap: 9px; }
+.connector-actions a { text-decoration: none; }
+.connector-actions .text-button { padding: 8px; border: 0; color: #778c96; background: transparent; font-size: 8px; }
+.connector-actions .text-button:hover { color: var(--text); }
+.connector-error { margin: 10px 0 0; color: #ffb8c4; font-size: 8px; line-height: 1.55; }
+.connector-privacy { margin: 12px 0 0; padding-top: 11px; border-top: 1px solid var(--line-soft); color: #718690; font-size: 8px; line-height: 1.55; }
 .connection-check {
   margin-bottom: 15px;
   padding: 12px;
@@ -887,6 +957,10 @@ td small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px;
   .modal.drawer { width: 100%; height: 100vh; max-height: 100vh; border-radius: 0; }
   .provider-login-card { grid-template-columns: auto minmax(0, 1fr); }
   .provider-login-card > a { grid-column: 1 / -1; justify-content: center; }
+  .connector-card-head { grid-template-columns: auto minmax(0, 1fr); }
+  .connector-card-head > a { grid-column: 1 / -1; justify-content: center; }
+  .connector-status { grid-template-columns: auto minmax(0, 1fr); }
+  .connector-status > button { grid-column: 1 / -1; justify-content: center; }
   .connection-check { align-items: stretch; flex-direction: column; }
   .connection-check > button { justify-content: center; }
   .model-selector, .form-grid { grid-template-columns: 1fr; }
@@ -931,6 +1005,8 @@ td small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px;
   .segmented-control button { flex: 1; }
   .one-time-key { align-items: stretch; flex-direction: column; }
   .one-time-key button { justify-content: center; }
+  .connector-actions { align-items: stretch; flex-direction: column; }
+  .connector-actions a, .connector-actions button { justify-content: center; text-align: center; }
   .confirm-actions { display: grid; grid-template-columns: 1fr 1fr; }
 }
 

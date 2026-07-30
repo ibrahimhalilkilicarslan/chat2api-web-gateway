@@ -435,6 +435,155 @@ describe('gateway HTTP security contract', () => {
     expect(JSON.stringify(auditLogs)).not.toContain('preflight-token-that-must-remain-private')
   })
 
+  it('links a DeepSeek browser session through a short-lived origin-bound capability', async () => {
+    const accountCount = storeManager.getAccounts().length
+    const started = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/sessions',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        name: 'Browser-linked account',
+        email: 'browser-linked@example.com',
+        dailyLimit: 250,
+      },
+    })
+    const link = started.json<{
+      id: string
+      status: string
+      connectorCode: string
+      expiresAt: number
+    }>()
+    expect(started.statusCode).toBe(201)
+    expect(link.status).toBe('waiting')
+    expect(link.connectorCode).toMatch(/^c2a-ds-link-v1\./)
+
+    const encoded = link.connectorCode.slice('c2a-ds-link-v1.'.length)
+    const connector = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+      endpoint: string
+      sessionId: string
+      secret: string
+    }
+    expect(connector.endpoint).toBe(`${origin}/admin/api/deepseek-link/complete`)
+    expect(connector.sessionId).toBe(link.id)
+
+    const token = 'browser-session-token-that-must-remain-private'
+    const wrongOrigin = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/complete',
+      headers: {
+        origin: 'https://untrusted.example',
+        'content-type': 'text/plain;charset=UTF-8',
+      },
+      payload: JSON.stringify({
+        sessionId: connector.sessionId,
+        secret: connector.secret,
+        token,
+      }),
+    })
+    expect(wrongOrigin.statusCode).toBe(403)
+
+    const completed = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/complete',
+      headers: {
+        origin: 'https://chat.deepseek.com',
+        'content-type': 'text/plain;charset=UTF-8',
+      },
+      payload: JSON.stringify({
+        sessionId: connector.sessionId,
+        secret: connector.secret,
+        token,
+      }),
+    })
+    const completedBody = completed.json<{ status: string; accountId: string }>()
+    expect(completed.statusCode).toBe(201)
+    expect(completed.headers['access-control-allow-origin']).toBe('https://chat.deepseek.com')
+    expect(completedBody.status).toBe('complete')
+    expect(JSON.stringify(completedBody)).not.toContain(token)
+    expect(storeManager.getAccounts()).toHaveLength(accountCount + 1)
+    expect(storeManager.getAccountById(completedBody.accountId, true)?.credentials.token).toBe(token)
+
+    const status = await app.inject({
+      method: 'GET',
+      url: `/admin/api/deepseek-link/sessions/${link.id}`,
+      headers: { cookie: cookies },
+    })
+    expect(status.statusCode).toBe(200)
+    expect(status.json()).toMatchObject({
+      status: 'complete',
+      accountId: completedBody.accountId,
+    })
+    expect(JSON.stringify(status.json())).not.toContain(connector.secret)
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/complete',
+      headers: {
+        origin: 'https://chat.deepseek.com',
+        'content-type': 'text/plain;charset=UTF-8',
+      },
+      payload: JSON.stringify({
+        sessionId: connector.sessionId,
+        secret: connector.secret,
+        token,
+      }),
+    })
+    expect(replay.statusCode).toBe(200)
+    expect(replay.json()).toMatchObject({
+      status: 'complete',
+      accountId: completedBody.accountId,
+    })
+    expect(storeManager.getAccounts()).toHaveLength(accountCount + 1)
+    expect(JSON.stringify(storeManager.listAuditLogs(50))).not.toContain(token)
+    expect(JSON.stringify(storeManager.listAuditLogs(50))).not.toContain(connector.secret)
+  })
+
+  it('does not persist an invalid automatically captured DeepSeek session', async () => {
+    const accountCount = storeManager.getAccounts().length
+    const started = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/sessions',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: { name: 'Invalid browser session' },
+    })
+    const link = started.json<{ id: string; connectorCode: string }>()
+    const connector = JSON.parse(
+      Buffer.from(
+        link.connectorCode.slice('c2a-ds-link-v1.'.length),
+        'base64url',
+      ).toString('utf8'),
+    ) as { sessionId: string; secret: string }
+    const invalidToken = 'invalid-browser-token-that-must-remain-private'
+
+    const rejected = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/complete',
+      headers: {
+        origin: 'https://chat.deepseek.com',
+        'content-type': 'text/plain;charset=UTF-8',
+      },
+      payload: JSON.stringify({
+        sessionId: connector.sessionId,
+        secret: connector.secret,
+        token: invalidToken,
+      }),
+    })
+    expect(rejected.statusCode).toBe(422)
+    expect(storeManager.getAccounts()).toHaveLength(accountCount)
+    expect(JSON.stringify(rejected.json())).not.toContain(invalidToken)
+
+    const status = await app.inject({
+      method: 'GET',
+      url: `/admin/api/deepseek-link/sessions/${link.id}`,
+      headers: { cookie: cookies },
+    })
+    expect(status.json()).toMatchObject({
+      status: 'waiting',
+      errorCode: 'provider_authentication_failed',
+    })
+    expect(JSON.stringify(status.json())).not.toContain(invalidToken)
+  })
+
   it('rejects an invalid credential before account persistence', async () => {
     const accountCount = storeManager.getAccounts().length
     const rejected = await app.inject({

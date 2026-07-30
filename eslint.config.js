@@ -48,4 +48,22 @@ export default tseslint.config(
       'no-console': 'error',
     },
   },
+  {
+    files: ['tools/deepseek-session-connector/*.js'],
+    languageOptions: {
+      globals: {
+        URL: 'readonly',
+        TextDecoder: 'readonly',
+        atob: 'readonly',
+        chrome: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        navigator: 'readonly',
+        window: 'readonly',
+      },
+    },
+    rules: {
+      'no-console': 'error',
+    },
+  },
 )

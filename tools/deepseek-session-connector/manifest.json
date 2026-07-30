@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Chat2API DeepSeek Session Connector",
+  "version": "1.0.0",
+  "description": "Transfers an explicitly authorized DeepSeek web session to a one-time Chat2API gateway link.",
+  "permissions": [
+    "clipboardRead",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://chat.deepseek.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "DeepSeek oturumunu bağla",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.deepseek.com/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

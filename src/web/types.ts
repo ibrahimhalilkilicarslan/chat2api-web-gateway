@@ -93,6 +93,17 @@ export interface Account {
   cooldownUntil: number | null
 }
 
+export interface DeepSeekLinkSession {
+  id: string
+  status: 'waiting' | 'validating' | 'complete' | 'cancelled' | 'expired'
+  createdAt: number
+  expiresAt: number
+  accountId?: string
+  errorCode?: string
+  errorMessage?: string
+  connectorCode?: string
+}
+
 export interface ApiKeyRecord {
   id: string
   name: string

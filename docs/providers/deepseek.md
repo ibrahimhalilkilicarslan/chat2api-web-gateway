@@ -41,16 +41,44 @@ requests become HTTP `429`; streams receive a sanitized
 
 ## Account onboarding
 
-The admin console opens `chat.deepseek.com` in a separate browser tab. It does
-not embed the login page, read cross-origin cookies, capture passwords, or
-upload browser cookie/HAR files. An authorized operator explicitly pastes the
-dedicated account's web session token. The server validates it before
-persistence, strips an optional `Bearer` prefix, and stores it only after a
-successful check using AES-256-GCM.
+The recommended flow uses the optional **Chat2API DeepSeek Session Connector**
+browser extension:
+
+1. The authenticated admin creates a five-minute, in-memory link session.
+2. The admin console copies a one-time capability and opens
+   `chat.deepseek.com`.
+3. The operator confirms the exact gateway hostname in the extension and signs
+   in on DeepSeek's own page.
+4. After login, a main-world script reads only DeepSeek's `userToken` value and
+   posts it from the fixed `https://chat.deepseek.com` origin to the exact,
+   one-time gateway endpoint.
+5. The server validates the capability and provider session before creating the
+   account. Invalid sessions are not persisted.
+
+The extension does not request browser cookie, history, download, or
+`webRequest` permissions. It does not read the account password, persist the
+provider token in extension storage, upload HAR files, or expose the token to
+the admin page. The capability is single-use, bound to the admin-created
+session, origin-checked, and expires after five minutes.
+
+Manual token entry remains available as a recovery path. The server strips an
+optional `Bearer` prefix, validates the token before persistence, and stores it
+using AES-256-GCM.
 
 DeepSeek does not document this web-session workflow as an official public API.
 Do not represent this onboarding as official OAuth or as equivalent to a
 DeepSeek API key.
+
+### Connector installation
+
+Download `deepseek-session-connector-v1.0.0.zip` from the account drawer in the
+admin console. Extract it and load the folder as an unpacked extension from
+`chrome://extensions` or `edge://extensions`. Pin the extension before starting
+the first link.
+
+The unpacked extension is intended for controlled operator browsers. A public
+store release requires separate signing, review, privacy disclosure, and update
+governance.
 
 ## Operational warning
 
