@@ -91,22 +91,24 @@ obsolete backups after validating the replacement.
 2. Sign in with the locally retrieved admin token.
 3. Download the Session Connector package for Windows, macOS, or Linux from the
    release page linked by `DeepSeek hesabı ekle`.
-4. Select `Otomatik bağla`, enter an account label, and choose `Bağlantı kodu
-   oluştur`. The console creates a five-minute native capability and copies it
-   to the clipboard.
-5. Open the portable connector, paste the code, verify the exact gateway
-   hostname, and continue.
-6. Complete login only in the isolated browser window opened by the connector.
+4. Open the connector once after download. Windows and Linux register a
+   per-user launch handler; macOS keeps manual code entry.
+5. Select `Otomatik bağla`, enter an account label, and choose `Connector ile
+   bağlan`. The console creates a ten-minute native capability and opens the
+   installed connector directly where supported.
+6. Verify the exact gateway hostname. If automatic launch is unavailable, use
+   `Manuel kodu kopyala` and paste it into the connector.
+7. Complete login only in the isolated browser window opened by the connector.
    It transfers the web session without reading the password or OTP and removes
    the temporary browser profile afterward. Invalid credentials are not saved.
-7. If the connector cannot run, use `Manuel token` as the documented
+8. If the connector cannot run, use `Manuel token` as the documented
    recovery flow. Never upload cookies or HAR files.
-8. Create a separate API key for each client with the minimum scopes, model
+9. Create a separate API key for each client with the minimum scopes, model
    allowlist, expiry, quota, and stable egress IP/CIDR policy.
-9. Store each raw client key immediately; it is shown once.
-10. Send one non-sensitive JSON request.
-11. Send one non-sensitive streaming request.
-12. Confirm the overview reports operational traffic readiness and activity
+10. Store each raw client key immediately; it is shown once.
+11. Send one non-sensitive JSON request.
+12. Send one non-sensitive streaming request.
+13. Confirm the overview reports operational traffic readiness and activity
    metadata contains no prompt or response content.
 
 ## Coolify

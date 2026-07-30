@@ -13,6 +13,7 @@ describe('DeepSeekLinkSessionRegistry', () => {
     expect(created.secrets.native.length).toBeGreaterThan(30)
     expect(created.secrets['browser-extension'].length).toBeGreaterThan(30)
     expect(created.secrets.native).not.toBe(created.secrets['browser-extension'])
+    expect(created.session.expiresAt).toBe(1_000 + 10 * 60_000)
     expect(registry.read(created.session.id, 'admin-session-a', 1_001)).toMatchObject({
       status: 'waiting',
     })

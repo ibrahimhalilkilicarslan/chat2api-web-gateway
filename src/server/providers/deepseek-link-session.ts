@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { constantTimeEqual, hashSecret, randomToken } from '../../core/security/crypto.js'
 
-const LINK_LIFETIME_MS = 5 * 60_000
+const LINK_LIFETIME_MS = 10 * 60_000
 const MAX_PENDING_LINKS = 100
 
 export type DeepSeekLinkStatus = 'waiting' | 'validating' | 'complete' | 'cancelled'

@@ -63,6 +63,7 @@ import {
   updateSettings,
   validateAccountCredentials,
 } from './api'
+import { buildNativeConnectorUrl, supportsNativeConnectorLaunch } from './connector'
 import type {
   Account,
   AccountHealthResult,
@@ -1502,6 +1503,7 @@ function AccountPanel(props: {
   const [linkSession, setLinkSession] = useState<DeepSeekLinkSession | null>(null)
   const [linkStarting, setLinkStarting] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
+  const [connectorLaunched, setConnectorLaunched] = useState(false)
   const [linkError, setLinkError] = useState<string | null>(null)
   const linkedReported = useRef(false)
   const isEditing = Boolean(props.account)
@@ -1595,6 +1597,29 @@ function AccountPanel(props: {
     }
   }
 
+  const launchConnector = (value = linkSession?.nativeConnectorCode) => {
+    if (!value) return
+    if (!supportsNativeConnectorLaunch(window.navigator.userAgent)) {
+      setLinkError('macOS sürümünde bağlantı kodunu connector uygulamasına yapıştırın.')
+      return
+    }
+    try {
+      const launchLink = document.createElement('a')
+      launchLink.hidden = true
+      launchLink.rel = 'noreferrer'
+      launchLink.href = buildNativeConnectorUrl(value)
+      document.body.append(launchLink)
+      launchLink.click()
+      launchLink.remove()
+      setConnectorLaunched(true)
+      setProviderOpened(true)
+      setLinkError(null)
+    } catch (cause) {
+      setConnectorLaunched(false)
+      setLinkError(cause instanceof Error ? cause.message : 'Connector açılamadı.')
+    }
+  }
+
   const startAutomaticLink = async () => {
     if (!name.trim()) {
       setLinkError('Önce hesap etiketini girin.')
@@ -1603,6 +1628,7 @@ function AccountPanel(props: {
     setLinkStarting(true)
     setLinkError(null)
     setLinkCopied(false)
+    setConnectorLaunched(false)
     try {
       const started = await startDeepSeekLink({
         name: name.trim(),
@@ -1610,8 +1636,7 @@ function AccountPanel(props: {
         dailyLimit: dailyLimit ? Number(dailyLimit) : undefined,
       })
       setLinkSession(started)
-      await copyConnectorCode(started.nativeConnectorCode)
-      setProviderOpened(true)
+      launchConnector(started.nativeConnectorCode)
     } catch (cause) {
       setLinkError(cause instanceof Error ? cause.message : 'Güvenli bağlantı başlatılamadı.')
     } finally {
@@ -1626,6 +1651,7 @@ function AccountPanel(props: {
     setLinkSession(null)
     setLinkError(null)
     setLinkCopied(false)
+    setConnectorLaunched(false)
     linkedReported.current = false
   }
 
@@ -1641,7 +1667,7 @@ function AccountPanel(props: {
       title={isEditing ? 'DeepSeek hesabını düzenle' : 'DeepSeek hesabı ekle'}
       subtitle={isEditing
         ? 'Şifreli değerler gösterilmez. Token değişikliği kaydedilmeden önce yeniden doğrulanır.'
-        : 'Portable connector girişi DeepSeek üzerinde açar ve oturumu güvenle doğrular.'}
+        : 'Connector DeepSeek girişini açar ve oturumu doğrudan bu gateway’e bağlar.'}
       onClose={closePanel}
       drawer
     >
@@ -1701,7 +1727,7 @@ function AccountPanel(props: {
                 <span><PlugZap size={19} /></span>
                 <div>
                   <strong>Chat2API Session Connector</strong>
-                  <p>Windows, macOS veya Linux uygulaması kurulu tarayıcıyı izole profille açar. Eklenti ve mağaza onayı gerekmez.</p>
+                  <p>Windows ve Linux’ta tek tıkla açılır. macOS için bağlantı kodu yedek akışı kullanılabilir.</p>
                 </div>
                 <a
                   className="secondary-button compact"
@@ -1713,11 +1739,11 @@ function AccountPanel(props: {
                 </a>
               </div>
               <details className="connector-install-help">
-                <summary>Nasıl bağlanır?</summary>
+                <summary>İlk kullanım</summary>
                 <ol>
-                  <li>İşletim sisteminize uygun connector paketini bir kez indirin.</li>
-                  <li>Aşağıdan beş dakikalık bağlantı kodunu oluşturun; kod panoya alınır.</li>
-                  <li>Connector’ı açıp kodu yapıştırın ve gateway adresini doğrulayın.</li>
+                  <li>İşletim sisteminize uygun güncel connector paketini indirin.</li>
+                  <li>Connector’ı bir kez açın; Windows ve Linux bağlantı kaydı otomatik kurulur.</li>
+                  <li>Aşağıdan bağlantıyı başlatın ve gateway adresini doğrulayın.</li>
                   <li>Açılan DeepSeek penceresinde girişi tamamlayın.</li>
                 </ol>
               </details>
@@ -1730,7 +1756,7 @@ function AccountPanel(props: {
                 >
                   {linkStarting
                     ? <><RefreshCw size={16} className="spin" /> Bağlantı hazırlanıyor</>
-                    : <><PlugZap size={16} /> Bağlantı kodu oluştur</>}
+                    : <><PlugZap size={16} /> Connector ile bağlan</>}
                 </button>
               ) : (
                 <div className={`connector-status ${linkSession.status}`}>
@@ -1750,33 +1776,35 @@ function AccountPanel(props: {
                       ? 'Oturum doğrulanıyor'
                       : linkSession.status === 'expired'
                       ? 'Bağlantı süresi doldu'
-                      : 'DeepSeek girişi bekleniyor'}</strong>
+                      : connectorLaunched
+                      ? 'Connector açıldı'
+                      : 'Connector onayı bekleniyor'}</strong>
                     <small>{linkSession.status === 'complete'
                       ? 'Token doğrulandı ve doğrudan şifreli kasaya kaydedildi.'
                       : linkSession.errorMessage
-                      ?? 'Connector uygulamasını açıp panodaki kodu yapıştırın. DeepSeek penceresini uygulama açar.'}</small>
+                      ?? (connectorLaunched
+                        ? 'Connector penceresindeki gateway adresini onaylayıp DeepSeek girişini tamamlayın.'
+                        : 'Connector açılmadıysa aşağıdaki düğmeyle yeniden deneyin veya kodu kopyalayın.')}</small>
                   </div>
-                  {linkSession.status !== 'complete' && linkSession.nativeConnectorCode && (
-                    <button
-                      type="button"
-                      className="secondary-button compact"
-                      onClick={() => void copyConnectorCode()}
-                    >
-                      {linkCopied ? <Check size={14} /> : <Copy size={14} />}
-                      {linkCopied ? 'Kod panoda' : 'Kodu kopyala'}
-                    </button>
-                  )}
                 </div>
               )}
               {linkSession && !['complete', 'expired'].includes(linkSession.status) && (
                 <div className="connector-actions">
                   <button
                     type="button"
+                    className="primary-button compact"
+                    onClick={() => launchConnector()}
+                  >
+                    <PlugZap size={14} />
+                    {connectorLaunched ? 'Connector’ı yeniden aç' : 'Connector’ı aç'}
+                  </button>
+                  <button
+                    type="button"
                     className="secondary-button compact"
                     onClick={() => void copyConnectorCode()}
                   >
                     {linkCopied ? <Check size={14} /> : <Copy size={14} />}
-                    {linkCopied ? 'Kod panoda' : 'Bağlantı kodunu kopyala'}
+                    {linkCopied ? 'Kod panoda' : 'Manuel kodu kopyala'}
                   </button>
                   <button
                     type="button"

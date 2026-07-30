@@ -777,8 +777,9 @@ td small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px;
 .connector-status.expired > span { color: #ffc0ca; background: rgba(255, 113, 134, .1); }
 .connector-status strong { display: block; font-size: 10px; }
 .connector-status small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px; line-height: 1.5; }
-.connector-actions { margin-top: 10px; display: flex; align-items: center; gap: 9px; }
+.connector-actions { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
 .connector-actions a { text-decoration: none; }
+.connector-actions .primary-button { justify-content: center; }
 .connector-actions .text-button { padding: 8px; border: 0; color: #778c96; background: transparent; font-size: 8px; }
 .connector-actions .text-button:hover { color: var(--text); }
 .connector-error { margin: 10px 0 0; color: #ffb8c4; font-size: 8px; line-height: 1.55; }

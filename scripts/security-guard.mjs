@@ -144,6 +144,7 @@ for (const obsoletePath of [
 const connectorRoot = resolve(root, 'tools/deepseek-session-connector')
 const connectorManifest = JSON.parse(readFileSync(resolve(connectorRoot, 'manifest.json'), 'utf8'))
 const connectorWorker = readFileSync(resolve(connectorRoot, 'service-worker.js'), 'utf8')
+const nativeConnectorLaunch = readFileSync(resolve(root, 'src/web/connector.ts'), 'utf8')
 const adminRoutes = readFileSync(resolve(root, 'src/server/routes/admin.ts'), 'utf8')
 for (const permission of ['cookies', 'webRequest', 'webRequestBlocking', 'history', 'downloads']) {
   if (connectorManifest.permissions?.includes(permission)) {
@@ -181,6 +182,14 @@ if (
   || !adminRoutes.includes('c2a-ds-native-v1.')
 ) {
   fail('DeepSeek pairing capabilities are not transport-bound')
+}
+if (
+  !nativeConnectorLaunch.includes("const nativeConnectorScheme = 'chat2api-connector'")
+  || !nativeConnectorLaunch.includes("const nativeCapabilityPrefix = 'c2a-ds-native-v1.'")
+  || !nativeConnectorLaunch.includes('new URLSearchParams({ code: value })')
+  || /console\./.test(nativeConnectorLaunch)
+) {
+  fail('native connector custom-protocol handoff is missing or unsafe')
 }
 
 const bundlePath = resolve(root, 'dist/server/bootstrap.js')
