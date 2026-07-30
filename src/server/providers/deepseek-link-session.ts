@@ -5,10 +5,11 @@ const LINK_LIFETIME_MS = 5 * 60_000
 const MAX_PENDING_LINKS = 100
 
 export type DeepSeekLinkStatus = 'waiting' | 'validating' | 'complete' | 'cancelled'
+export type DeepSeekLinkTransport = 'browser-extension' | 'native'
 
 interface DeepSeekLinkRecord {
   id: string
-  secretHash: string
+  secretHashes: Record<DeepSeekLinkTransport, string>
   ownerNonce: string
   name: string
   email?: string
@@ -49,7 +50,10 @@ export class DeepSeekLinkSessionRegistry {
     email?: string
     dailyLimit?: number
     now?: number
-  }): { session: DeepSeekLinkView; secret: string } {
+  }): {
+    session: DeepSeekLinkView
+    secrets: Record<DeepSeekLinkTransport, string>
+  } {
     const now = input.now ?? Date.now()
     this.purge(now)
     if (this.sessions.size >= MAX_PENDING_LINKS) {
@@ -58,10 +62,16 @@ export class DeepSeekLinkSessionRegistry {
     }
 
     const id = randomUUID()
-    const secret = randomToken(32)
+    const secrets = {
+      'browser-extension': randomToken(32),
+      native: randomToken(32),
+    }
     const record: DeepSeekLinkRecord = {
       id,
-      secretHash: hashSecret(secret),
+      secretHashes: {
+        'browser-extension': hashSecret(secrets['browser-extension']),
+        native: hashSecret(secrets.native),
+      },
       ownerNonce: input.ownerNonce,
       name: input.name,
       email: input.email,
@@ -71,7 +81,7 @@ export class DeepSeekLinkSessionRegistry {
       expiresAt: now + LINK_LIFETIME_MS,
     }
     this.sessions.set(id, record)
-    return { session: this.toView(record, now), secret }
+    return { session: this.toView(record, now), secrets }
   }
 
   read(id: string, ownerNonce: string, now = Date.now()): DeepSeekLinkView | undefined {
@@ -80,12 +90,17 @@ export class DeepSeekLinkSessionRegistry {
     return this.toView(record, now)
   }
 
-  claim(id: string, secret: string, now = Date.now()): DeepSeekLinkClaim | undefined {
+  claim(
+    id: string,
+    secret: string,
+    transport: DeepSeekLinkTransport,
+    now = Date.now(),
+  ): DeepSeekLinkClaim | undefined {
     const record = this.sessions.get(id)
     if (
       !record
       || record.expiresAt <= now
-      || !constantTimeEqual(record.secretHash, hashSecret(secret))
+      || !constantTimeEqual(record.secretHashes[transport], hashSecret(secret))
       || record.status === 'cancelled'
     ) {
       return undefined

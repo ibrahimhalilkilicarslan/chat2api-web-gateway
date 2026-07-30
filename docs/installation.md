@@ -89,18 +89,17 @@ obsolete backups after validating the replacement.
 
 1. Open `/admin/`.
 2. Sign in with the locally retrieved admin token.
-3. Download the Session Connector ZIP from `DeepSeek hesabı ekle`, extract it,
-   and load the folder once from `chrome://extensions` or `edge://extensions`
-   using `Paketlenmemiş öğe yükle`.
-4. Select `Otomatik bağla`, enter an account label, and choose
-   `DeepSeek ile bağlan`. The console creates a five-minute link, copies it to
-   the clipboard, and opens DeepSeek.
-5. Open the pinned Session Connector, use the clipboard link, verify the exact
-   gateway hostname, and start the connection.
-6. Complete login only on DeepSeek's page. The connector transfers the web
-   session after login without reading the password or persisting the token in
-   extension storage. Invalid credentials are not saved.
-7. If the extension cannot be installed, use `Manuel token` as the documented
+3. Download the Session Connector package for Windows, macOS, or Linux from the
+   release page linked by `DeepSeek hesabı ekle`.
+4. Select `Otomatik bağla`, enter an account label, and choose `Bağlantı kodu
+   oluştur`. The console creates a five-minute native capability and copies it
+   to the clipboard.
+5. Open the portable connector, paste the code, verify the exact gateway
+   hostname, and continue.
+6. Complete login only in the isolated browser window opened by the connector.
+   It transfers the web session without reading the password or OTP and removes
+   the temporary browser profile afterward. Invalid credentials are not saved.
+7. If the connector cannot run, use `Manuel token` as the documented
    recovery flow. Never upload cookies or HAR files.
 8. Create a separate API key for each client with the minimum scopes, model
    allowlist, expiry, quota, and stable egress IP/CIDR policy.

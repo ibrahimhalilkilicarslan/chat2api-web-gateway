@@ -26,12 +26,15 @@
 - Use a separate admin hostname and enforce it with
   `CHAT2API_ADMIN_HOSTS`; see [Admin Access](admin-access.md).
 - Use a dedicated DeepSeek account; do not reuse a personal high-value account.
-- Install the optional Session Connector only from the ZIP served by the
-  authenticated gateway admin console. Review the exact gateway hostname before
-  starting every link.
-- The connector intentionally has no cookie, history, `webRequest`, download,
-  or arbitrary-host permission. It reads `userToken` only inside the explicit
-  five-minute link and never writes it to extension storage.
+- Install the native Session Connector only from an immutable, checksum-verified
+  project release. Review the exact gateway hostname before every link.
+- The connector starts a non-default temporary browser profile and reads only
+  DeepSeek's `userToken` after explicit login. It does not inspect the default
+  profile, password, OTP, cookies, history, or unrelated storage.
+- Native and browser-extension capabilities use separate high-entropy secrets.
+  The native endpoint requires a non-browser header, rejects browser origins,
+  exposes no CORS policy, and validates the provider session before encrypted
+  persistence.
 - Do not use multiple accounts to evade provider quotas or controls.
 - Keep the SQLite volume encrypted and export verified backups off-host.
 - Store the master key separately from database backups.

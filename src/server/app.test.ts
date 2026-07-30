@@ -451,11 +451,13 @@ describe('gateway HTTP security contract', () => {
       id: string
       status: string
       connectorCode: string
+      nativeConnectorCode: string
       expiresAt: number
     }>()
     expect(started.statusCode).toBe(201)
     expect(link.status).toBe('waiting')
     expect(link.connectorCode).toMatch(/^c2a-ds-link-v1\./)
+    expect(link.nativeConnectorCode).toMatch(/^c2a-ds-native-v1\./)
 
     const encoded = link.connectorCode.slice('c2a-ds-link-v1.'.length)
     const connector = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
@@ -465,6 +467,23 @@ describe('gateway HTTP security contract', () => {
     }
     expect(connector.endpoint).toBe(`${origin}/admin/api/deepseek-link/complete`)
     expect(connector.sessionId).toBe(link.id)
+    const nativeConnector = JSON.parse(
+      Buffer.from(
+        link.nativeConnectorCode.slice('c2a-ds-native-v1.'.length),
+        'base64url',
+      ).toString('utf8'),
+    ) as {
+      endpoint: string
+      sessionId: string
+      secret: string
+      transport: string
+    }
+    expect(nativeConnector).toMatchObject({
+      endpoint: `${origin}/admin/api/deepseek-link/native-complete`,
+      sessionId: link.id,
+      transport: 'native',
+    })
+    expect(nativeConnector.secret).not.toBe(connector.secret)
 
     const token = 'browser-session-token-that-must-remain-private'
     const wrongOrigin = await app.inject({
@@ -536,6 +555,109 @@ describe('gateway HTTP security contract', () => {
     expect(storeManager.getAccounts()).toHaveLength(accountCount + 1)
     expect(JSON.stringify(storeManager.listAuditLogs(50))).not.toContain(token)
     expect(JSON.stringify(storeManager.listAuditLogs(50))).not.toContain(connector.secret)
+  })
+
+  it('links through a transport-bound native connector capability', async () => {
+    const accountCount = storeManager.getAccounts().length
+    const started = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/sessions',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        name: 'Native-linked account',
+        email: 'native-linked@example.com',
+        dailyLimit: 300,
+      },
+    })
+    const link = started.json<{
+      id: string
+      connectorCode: string
+      nativeConnectorCode: string
+    }>()
+    const browserConnector = JSON.parse(
+      Buffer.from(
+        link.connectorCode.slice('c2a-ds-link-v1.'.length),
+        'base64url',
+      ).toString('utf8'),
+    ) as { secret: string }
+    const connector = JSON.parse(
+      Buffer.from(
+        link.nativeConnectorCode.slice('c2a-ds-native-v1.'.length),
+        'base64url',
+      ).toString('utf8'),
+    ) as { endpoint: string; sessionId: string; secret: string }
+    const token = 'native-session-token-that-must-remain-private'
+
+    const browserRequest = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/native-complete',
+      headers: {
+        origin,
+        'content-type': 'application/json',
+        'x-chat2api-connector': 'native-v1',
+      },
+      payload: {
+        sessionId: connector.sessionId,
+        secret: connector.secret,
+        token,
+      },
+    })
+    expect(browserRequest.statusCode).toBe(403)
+
+    const wrongTransportSecret = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/native-complete',
+      headers: {
+        'content-type': 'application/json',
+        'x-chat2api-connector': 'native-v1',
+      },
+      payload: {
+        sessionId: connector.sessionId,
+        secret: browserConnector.secret,
+        token,
+      },
+    })
+    expect(wrongTransportSecret.statusCode).toBe(401)
+
+    const completed = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/native-complete',
+      headers: {
+        'content-type': 'application/json',
+        'x-chat2api-connector': 'native-v1',
+      },
+      payload: {
+        sessionId: connector.sessionId,
+        secret: connector.secret,
+        token,
+      },
+    })
+    const completedBody = completed.json<{ status: string; accountId: string }>()
+    expect(completed.statusCode).toBe(201)
+    expect(completed.headers['access-control-allow-origin']).toBeUndefined()
+    expect(completedBody.status).toBe('complete')
+    expect(JSON.stringify(completedBody)).not.toContain(token)
+    expect(storeManager.getAccounts()).toHaveLength(accountCount + 1)
+    expect(storeManager.getAccountById(completedBody.accountId, true)?.credentials.token).toBe(token)
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/admin/api/deepseek-link/native-complete',
+      headers: {
+        'content-type': 'application/json',
+        'x-chat2api-connector': 'native-v1',
+      },
+      payload: {
+        sessionId: connector.sessionId,
+        secret: connector.secret,
+        token,
+      },
+    })
+    expect(replay.statusCode).toBe(200)
+    expect(storeManager.getAccounts()).toHaveLength(accountCount + 1)
+    expect(JSON.stringify(storeManager.listAuditLogs(50))).not.toContain(token)
+    expect(JSON.stringify(storeManager.listAuditLogs(50))).not.toContain(connector.secret)
+    expect(JSON.stringify(storeManager.listAuditLogs(50))).not.toContain(browserConnector.secret)
   })
 
   it('does not persist an invalid automatically captured DeepSeek session', async () => {

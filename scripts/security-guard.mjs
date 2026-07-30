@@ -168,6 +168,20 @@ if (
 ) {
   fail('DeepSeek connector completion route is not bound to the fixed provider origin')
 }
+if (
+  !adminRoutes.includes("const NATIVE_CONNECTOR_HEADER = 'native-v1'")
+  || !adminRoutes.includes("request.headers['x-chat2api-connector'] !== NATIVE_CONNECTOR_HEADER")
+  || !adminRoutes.includes("request.headers.origin !== undefined")
+) {
+  fail('native connector completion route lacks its non-browser request boundary')
+}
+if (
+  !adminRoutes.includes("'browser-extension', reply")
+  || !adminRoutes.includes("'native', reply")
+  || !adminRoutes.includes('c2a-ds-native-v1.')
+) {
+  fail('DeepSeek pairing capabilities are not transport-bound')
+}
 
 const bundlePath = resolve(root, 'dist/server/bootstrap.js')
 if (existsSync(bundlePath)) {

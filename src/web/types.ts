@@ -102,6 +102,7 @@ export interface DeepSeekLinkSession {
   errorCode?: string
   errorMessage?: string
   connectorCode?: string
+  nativeConnectorCode?: string
 }
 
 export interface ApiKeyRecord {

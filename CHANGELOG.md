@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Cross-platform native Session Connector transport with independent,
+  short-lived capabilities for Windows, macOS, and Linux
+- Admin onboarding copy and workflow for a portable connector using an isolated
+  installed-browser profile
+
+### Security
+
+- Native and browser-extension capabilities use different secrets and cannot be
+  replayed across transport endpoints
+- Native completion rejects browser origins, requires an explicit connector
+  header, follows no CORS path, and preserves server-side credential validation
+
 ## 2.1.0 - 2026-07-30
 
 ### Added

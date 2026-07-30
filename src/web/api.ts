@@ -127,7 +127,10 @@ export function startDeepSeekLink(input: {
   name: string
   email?: string
   dailyLimit?: number
-}): Promise<DeepSeekLinkSession & { connectorCode: string }> {
+}): Promise<DeepSeekLinkSession & {
+  connectorCode: string
+  nativeConnectorCode: string
+}> {
   return request('/admin/api/deepseek-link/sessions', {
     method: 'POST',
     body: JSON.stringify(input),

@@ -14,7 +14,6 @@ import {
   Download,
   Eye,
   EyeOff,
-  ExternalLink,
   Filter,
   Gauge,
   KeyRound,
@@ -1500,9 +1499,7 @@ function AccountPanel(props: {
   const [connectionMode, setConnectionMode] = useState<'automatic' | 'manual'>(
     props.account ? 'manual' : 'automatic',
   )
-  const [linkSession, setLinkSession] = useState<
-    (DeepSeekLinkSession & { connectorCode?: string }) | null
-  >(null)
+  const [linkSession, setLinkSession] = useState<DeepSeekLinkSession | null>(null)
   const [linkStarting, setLinkStarting] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const [linkError, setLinkError] = useState<string | null>(null)
@@ -1533,6 +1530,7 @@ function AccountPanel(props: {
         setLinkSession((previous) => ({
           ...current,
           connectorCode: previous?.connectorCode,
+          nativeConnectorCode: previous?.nativeConnectorCode,
         }))
         if (current.status === 'complete' && !linkedReported.current) {
           linkedReported.current = true
@@ -1585,7 +1583,7 @@ function AccountPanel(props: {
     }
   }
 
-  const copyConnectorCode = async (value = linkSession?.connectorCode) => {
+  const copyConnectorCode = async (value = linkSession?.nativeConnectorCode) => {
     if (!value) return
     try {
       await navigator.clipboard.writeText(value)
@@ -1602,8 +1600,6 @@ function AccountPanel(props: {
       setLinkError('Önce hesap etiketini girin.')
       return
     }
-    const providerWindow = window.open('about:blank', '_blank')
-    if (providerWindow) providerWindow.opener = null
     setLinkStarting(true)
     setLinkError(null)
     setLinkCopied(false)
@@ -1614,13 +1610,9 @@ function AccountPanel(props: {
         dailyLimit: dailyLimit ? Number(dailyLimit) : undefined,
       })
       setLinkSession(started)
-      await copyConnectorCode(started.connectorCode)
-      if (providerWindow) {
-        providerWindow.location.replace('https://chat.deepseek.com/')
-      }
+      await copyConnectorCode(started.nativeConnectorCode)
       setProviderOpened(true)
     } catch (cause) {
-      providerWindow?.close()
       setLinkError(cause instanceof Error ? cause.message : 'Güvenli bağlantı başlatılamadı.')
     } finally {
       setLinkStarting(false)
@@ -1649,7 +1641,7 @@ function AccountPanel(props: {
       title={isEditing ? 'DeepSeek hesabını düzenle' : 'DeepSeek hesabı ekle'}
       subtitle={isEditing
         ? 'Şifreli değerler gösterilmez. Token değişikliği kaydedilmeden önce yeniden doğrulanır.'
-        : 'Girişi DeepSeek üzerinde tamamlayın; yardımcı uzantı oturumu güvenle doğrulasın.'}
+        : 'Portable connector girişi DeepSeek üzerinde açar ve oturumu güvenle doğrular.'}
       onClose={closePanel}
       drawer
     >
@@ -1666,7 +1658,7 @@ function AccountPanel(props: {
       }}>
         {!isEditing && (
           <div className="onboarding-progress" aria-label="Hesap bağlantı adımları">
-            <span className={providerOpened ? 'complete' : ''}><i>{providerOpened ? <Check size={13} /> : '1'}</i><strong>DeepSeek sekmesi</strong></span>
+            <span className={providerOpened ? 'complete' : ''}><i>{providerOpened ? <Check size={13} /> : '1'}</i><strong>Connector hazır</strong></span>
             <span className={linkSession || hasCredentialUpdates ? 'complete' : ''}><i>{linkSession || hasCredentialUpdates ? <Check size={13} /> : '2'}</i><strong>Güvenli aktarım</strong></span>
             <span className={linkSession?.status === 'complete' || validation?.healthy ? 'complete' : ''}><i>{linkSession?.status === 'complete' || validation?.healthy ? <Check size={13} /> : '3'}</i><strong>Doğrulama</strong></span>
           </div>
@@ -1708,24 +1700,25 @@ function AccountPanel(props: {
               <div className="connector-card-head">
                 <span><PlugZap size={19} /></span>
                 <div>
-                  <strong>Session Connector</strong>
-                  <p>Chrome veya Edge uzantısı, yalnız başlattığınız beş dakikalık bağlantı sırasında oturumu aktarır.</p>
+                  <strong>Chat2API Session Connector</strong>
+                  <p>Windows, macOS veya Linux uygulaması kurulu tarayıcıyı izole profille açar. Eklenti ve mağaza onayı gerekmez.</p>
                 </div>
                 <a
                   className="secondary-button compact"
-                  href="/admin/downloads/deepseek-session-connector-v1.0.0.zip"
-                  download
+                  href="https://github.com/ibrahimhalilkilicarslan/chat2api-session-connector/releases"
+                  target="_blank"
+                  rel="noreferrer noopener"
                 >
-                  <DownloadCloud size={14} /> Uzantıyı indir
+                  <DownloadCloud size={14} /> Connector paketleri
                 </a>
               </div>
               <details className="connector-install-help">
-                <summary>Bir kerelik uzantı kurulumu</summary>
+                <summary>Nasıl bağlanır?</summary>
                 <ol>
-                  <li>ZIP dosyasını çıkarın.</li>
-                  <li>Chrome için <code>chrome://extensions</code>, Edge için <code>edge://extensions</code> sayfasını açın.</li>
-                  <li>Geliştirici modunu açıp <strong>Paketlenmemiş öğe yükle</strong> ile klasörü seçin.</li>
-                  <li>Session Connector uzantısını araç çubuğuna sabitleyin.</li>
+                  <li>İşletim sisteminize uygun connector paketini bir kez indirin.</li>
+                  <li>Aşağıdan beş dakikalık bağlantı kodunu oluşturun; kod panoya alınır.</li>
+                  <li>Connector’ı açıp kodu yapıştırın ve gateway adresini doğrulayın.</li>
+                  <li>Açılan DeepSeek penceresinde girişi tamamlayın.</li>
                 </ol>
               </details>
               {!linkSession ? (
@@ -1737,7 +1730,7 @@ function AccountPanel(props: {
                 >
                   {linkStarting
                     ? <><RefreshCw size={16} className="spin" /> Bağlantı hazırlanıyor</>
-                    : <><PlugZap size={16} /> DeepSeek ile bağlan</>}
+                    : <><PlugZap size={16} /> Bağlantı kodu oluştur</>}
                 </button>
               ) : (
                 <div className={`connector-status ${linkSession.status}`}>
@@ -1761,9 +1754,9 @@ function AccountPanel(props: {
                     <small>{linkSession.status === 'complete'
                       ? 'Token doğrulandı ve doğrudan şifreli kasaya kaydedildi.'
                       : linkSession.errorMessage
-                      ?? 'Uzantıyı DeepSeek sekmesinde açın. Giriş tamamlandığında aktarım otomatik yapılır.'}</small>
+                      ?? 'Connector uygulamasını açıp panodaki kodu yapıştırın. DeepSeek penceresini uygulama açar.'}</small>
                   </div>
-                  {linkSession.status !== 'complete' && linkSession.connectorCode && (
+                  {linkSession.status !== 'complete' && linkSession.nativeConnectorCode && (
                     <button
                       type="button"
                       className="secondary-button compact"
@@ -1777,15 +1770,14 @@ function AccountPanel(props: {
               )}
               {linkSession && !['complete', 'expired'].includes(linkSession.status) && (
                 <div className="connector-actions">
-                  <a
+                  <button
+                    type="button"
                     className="secondary-button compact"
-                    href="https://chat.deepseek.com/"
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    onClick={() => setProviderOpened(true)}
+                    onClick={() => void copyConnectorCode()}
                   >
-                    DeepSeek’i aç <ExternalLink size={14} />
-                  </a>
+                    {linkCopied ? <Check size={14} /> : <Copy size={14} />}
+                    {linkCopied ? 'Kod panoda' : 'Bağlantı kodunu kopyala'}
+                  </button>
                   <button
                     type="button"
                     className="text-button"
@@ -1797,7 +1789,7 @@ function AccountPanel(props: {
               )}
               {linkError && <p className="connector-error">{linkError}</p>}
               <p className="connector-privacy">
-                Uzantı parola, cookie arşivi veya tarama geçmişi okuyamaz. Web tokenı uzantı deposuna yazılmaz ve yalnız bu gateway’in tek kullanımlık endpointine gönderilir.
+                Connector kişisel tarayıcı profilinizi, parolanızı, OTP kodunuzu veya geçmişinizi okuyamaz. Geçici profil işlem sonunda silinir; web tokenı yalnız onayladığınız gateway’in tek kullanımlık endpointine gönderilir.
               </p>
             </div>
           </div>

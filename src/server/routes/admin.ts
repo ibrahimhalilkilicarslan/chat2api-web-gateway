@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { RuntimeConfig } from '../../core/config.js'
 import { registerSecret } from '../../core/security/redaction.js'
@@ -13,11 +13,15 @@ import {
   type AccountHealthResult,
 } from '../providers/account-health.js'
 import { accountHealthRegistry } from '../providers/account-health-registry.js'
-import { DeepSeekLinkSessionRegistry } from '../providers/deepseek-link-session.js'
+import {
+  DeepSeekLinkSessionRegistry,
+  type DeepSeekLinkTransport,
+} from '../providers/deepseek-link-session.js'
 import type { AdminAuth } from '../security/admin-auth.js'
 import { isValidIpOrCidr } from '../security/ip-allowlist.js'
 
 const DEEPSEEK_CONNECTOR_ORIGIN = 'https://chat.deepseek.com'
+const NATIVE_CONNECTOR_HEADER = 'native-v1'
 
 const loginSchema = z.object({
   token: z.string().min(1).max(512),
@@ -368,15 +372,25 @@ export async function registerAdminRoutes(
       email: parsed.data.email || undefined,
       dailyLimit: parsed.data.dailyLimit,
     })
-    registerSecret(created.secret)
+    registerSecret(created.secrets['browser-extension'])
+    registerSecret(created.secrets.native)
     const connectorCode = `c2a-ds-link-v1.${Buffer.from(JSON.stringify({
       v: 1,
       endpoint: `${origin}/admin/api/deepseek-link/complete`,
       sessionId: created.session.id,
-      secret: created.secret,
+      secret: created.secrets['browser-extension'],
+      expiresAt: created.session.expiresAt,
+    }), 'utf8').toString('base64url')}`
+    const nativeConnectorCode = `c2a-ds-native-v1.${Buffer.from(JSON.stringify({
+      v: 1,
+      transport: 'native',
+      endpoint: `${origin}/admin/api/deepseek-link/native-complete`,
+      sessionId: created.session.id,
+      secret: created.secrets.native,
       expiresAt: created.session.expiresAt,
     }), 'utf8').toString('base64url')}`
     registerSecret(connectorCode)
+    registerSecret(nativeConnectorCode)
     storeManager.addAuditLog({
       actor: 'admin',
       action: 'account.link.start',
@@ -390,6 +404,7 @@ export async function registerAdminRoutes(
     return reply.code(201).send({
       ...created.session,
       connectorCode,
+      nativeConnectorCode,
     })
   })
 
@@ -440,40 +455,14 @@ export async function registerAdminRoutes(
     return reply.code(204).send()
   })
 
-  app.post('/admin/api/deepseek-link/complete', {
-    config: {
-      rateLimit: {
-        max: 10,
-        timeWindow: '1 minute',
-      },
-    },
-  }, async (request, reply) => {
-    reply.header('Access-Control-Allow-Origin', DEEPSEEK_CONNECTOR_ORIGIN)
-    reply.header('Cache-Control', 'no-store')
-    reply.header('Vary', 'Origin')
-    if (request.headers.origin !== DEEPSEEK_CONNECTOR_ORIGIN) {
-      return reply.code(403).send({
-        error: { code: 'origin_not_allowed', message: 'Connector origin is not allowed.' },
-      })
-    }
-
-    let payload: unknown = request.body
-    if (typeof payload === 'string') {
-      try {
-        payload = JSON.parse(payload)
-      } catch {
-        payload = undefined
-      }
-    }
-    const parsed = deepSeekLinkCompletionSchema.safeParse(payload)
-    if (!parsed.success) {
-      return reply.code(400).send({
-        error: { code: 'invalid_request', message: 'Invalid connector payload.' },
-      })
-    }
-    registerSecret(parsed.data.secret)
-    registerSecret(parsed.data.token)
-    const claim = deepSeekLinkSessions.claim(parsed.data.sessionId, parsed.data.secret)
+  const completeDeepSeekLink = async (
+    data: z.infer<typeof deepSeekLinkCompletionSchema>,
+    transport: DeepSeekLinkTransport,
+    reply: FastifyReply,
+  ) => {
+    registerSecret(data.secret)
+    registerSecret(data.token)
+    const claim = deepSeekLinkSessions.claim(data.sessionId, data.secret, transport)
     if (!claim) {
       return reply.code(401).send({
         error: { code: 'invalid_link_session', message: 'Connection session is invalid or expired.' },
@@ -488,7 +477,7 @@ export async function registerAdminRoutes(
       })
     }
 
-    const credentials = normalizeProviderCredentials('deepseek', { token: parsed.data.token })
+    const credentials = normalizeProviderCredentials('deepseek', { token: data.token })
     const credentialError = validateCredentialFields('deepseek', credentials, false)
     if (credentialError) {
       deepSeekLinkSessions.fail(claim.id, 'invalid_credentials', credentialError)
@@ -520,15 +509,18 @@ export async function registerAdminRoutes(
       todayUsed: 0,
     }
     const health = await accountHealthChecker(provider, account)
+    const connectorActor = transport === 'native'
+      ? 'deepseek-native-connector'
+      : 'deepseek-connector'
     if (!health.healthy) {
       deepSeekLinkSessions.fail(claim.id, health.code, health.message)
       storeManager.addAuditLog({
-        actor: 'deepseek-connector',
+        actor: connectorActor,
         action: 'account.link.complete',
         targetType: 'provider',
         targetId: 'deepseek',
         outcome: 'failure',
-        metadata: { healthCode: health.code },
+        metadata: { healthCode: health.code, transport },
       })
       return reply.code(422).send({
         error: { code: 'credential_validation_failed', message: health.message },
@@ -544,17 +536,78 @@ export async function registerAdminRoutes(
       throw error
     }
     storeManager.addAuditLog({
-      actor: 'deepseek-connector',
+      actor: connectorActor,
       action: 'account.link.complete',
       targetType: 'account',
       targetId: account.id,
       outcome: 'success',
-      metadata: { providerId: 'deepseek' },
+      metadata: { providerId: 'deepseek', transport },
     })
     return reply.code(201).send({
       status: 'complete',
       accountId: account.id,
     })
+  }
+
+  app.post('/admin/api/deepseek-link/complete', {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
+    reply.header('Access-Control-Allow-Origin', DEEPSEEK_CONNECTOR_ORIGIN)
+    reply.header('Cache-Control', 'no-store')
+    reply.header('Vary', 'Origin')
+    if (request.headers.origin !== DEEPSEEK_CONNECTOR_ORIGIN) {
+      return reply.code(403).send({
+        error: { code: 'origin_not_allowed', message: 'Connector origin is not allowed.' },
+      })
+    }
+
+    let payload: unknown = request.body
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload)
+      } catch {
+        payload = undefined
+      }
+    }
+    const parsed = deepSeekLinkCompletionSchema.safeParse(payload)
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: { code: 'invalid_request', message: 'Invalid connector payload.' },
+      })
+    }
+    return completeDeepSeekLink(parsed.data, 'browser-extension', reply)
+  })
+
+  app.post('/admin/api/deepseek-link/native-complete', {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store')
+    if (
+      request.headers.origin !== undefined
+      || request.headers['x-chat2api-connector'] !== NATIVE_CONNECTOR_HEADER
+      || !request.headers['content-type']?.toLowerCase().startsWith('application/json')
+    ) {
+      return reply.code(403).send({
+        error: { code: 'native_connector_required', message: 'Native connector authentication is required.' },
+      })
+    }
+    const parsed = deepSeekLinkCompletionSchema.safeParse(request.body)
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: { code: 'invalid_request', message: 'Invalid connector payload.' },
+      })
+    }
+    return completeDeepSeekLink(parsed.data, 'native', reply)
   })
 
   app.post('/admin/api/accounts/validate-credentials', {
