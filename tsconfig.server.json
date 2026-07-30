@@ -21,7 +21,6 @@
     "src/main/store/store.ts",
     "src/main/store/types.ts",
     "src/types/**/*.d.ts",
-    "tsup.config.ts",
     "vitest.config.ts"
   ],
   "exclude": ["src/**/*.test.ts"]

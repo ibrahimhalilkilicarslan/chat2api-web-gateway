@@ -49,12 +49,12 @@ const serverSource = [
   'src/core/config.ts',
   'src/server/app.ts',
   'src/main/store/store.ts',
-  'tsup.config.ts',
+  'scripts/build-server.mjs',
 ].map((path) => readFileSync(resolve(root, path), 'utf8')).join('\n')
 const storeSource = readFileSync(resolve(root, 'src/main/store/store.ts'), 'utf8')
 const databaseSource = readFileSync(resolve(root, 'src/core/storage/database.ts'), 'utf8')
 
-if (!serverSource.includes("options.drop = ['console', 'debugger']")) {
+if (!serverSource.includes("drop: ['console', 'debugger']")) {
   fail('production build does not strip legacy console diagnostics')
 }
 for (const persistedBodyMarker of [

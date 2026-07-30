@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.2.1 - 2026-07-30
+
+### Security
+
+- Pin the Vite development server to patched `esbuild` 0.28.1, avoiding the
+  Windows-only path traversal issue in older `servedir` implementations
+- Replace the unmaintained `tsup` wrapper with the pinned `esbuild` build API,
+  removing the remaining vulnerable development-only dependency path
+- Refresh GitHub Actions runtimes and enable GitHub CodeQL default setup
+
 ## 2.2.0 - 2026-07-30
 
 ### Added

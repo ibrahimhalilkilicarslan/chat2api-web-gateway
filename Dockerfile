@@ -15,7 +15,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile
 
-COPY tsconfig*.json tsup.config.ts vite.config.ts vitest.config.ts eslint.config.js ./
+COPY tsconfig*.json vite.config.ts vitest.config.ts eslint.config.js ./
 COPY scripts ./scripts
 COPY src ./src
 COPY tools ./tools
