@@ -157,7 +157,19 @@ async function run() {
       body: JSON.stringify({ model: 'deepseek-chat', prompt: 'legacy request' }),
     })
 
-    await expectStatus(`${baseUrl}/admin/`, 200)
+    const adminPage = await expectStatus(`${baseUrl}/admin/`, 200)
+    const adminHtml = await adminPage.text()
+    const adminAssetPaths = [...adminHtml.matchAll(/(?:src|href)="([^"]+)"/g)]
+      .map((match) => match[1])
+      .filter((path) => !path.startsWith('data:'))
+    assert.ok(adminAssetPaths.length > 0, 'Admin page has no bundled assets.')
+    assert.ok(
+      adminAssetPaths.every((path) => path.startsWith('/admin/')),
+      'Admin page contains assets outside the /admin/ mount.',
+    )
+    for (const path of adminAssetPaths) {
+      await expectStatus(new URL(path, baseUrl).toString(), 200)
+    }
     await expectStatus(`${baseUrl}/admin/api/login`, 403, {
       method: 'POST',
       headers: {
@@ -308,6 +320,7 @@ async function run() {
       health: 'pass',
       apiAuthentication: 'pass',
       unsupportedFeatureRejection: 'pass',
+      adminAssets: 'pass',
       adminSessionAndCsrf: 'pass',
       nonRoot: 'pass',
       readOnlyRootFilesystem: 'pass',
