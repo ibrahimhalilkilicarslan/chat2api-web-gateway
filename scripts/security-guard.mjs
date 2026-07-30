@@ -51,18 +51,28 @@ const serverSource = [
   'src/main/store/store.ts',
   'tsup.config.ts',
 ].map((path) => readFileSync(resolve(root, path), 'utf8')).join('\n')
+const storeSource = readFileSync(resolve(root, 'src/main/store/store.ts'), 'utf8')
+const databaseSource = readFileSync(resolve(root, 'src/core/storage/database.ts'), 'utf8')
 
 if (!serverSource.includes("options.drop = ['console', 'debugger']")) {
   fail('production build does not strip legacy console diagnostics')
 }
-if (!serverSource.includes('includeBodies: false')) {
-  fail('request body persistence is not forced off')
+for (const persistedBodyMarker of [
+  'request_body',
+  'response_body',
+  'requestBody',
+  'responseBody',
+  'prompt_text',
+]) {
+  if (storeSource.includes(persistedBodyMarker) || databaseSource.includes(persistedBodyMarker)) {
+    fail(`request content persistence surface remains: ${persistedBodyMarker}`)
+  }
 }
 if (!serverSource.includes("provider.type !== 'builtin'")) {
   fail('custom provider fail-closed guard is missing')
 }
-if (!serverSource.includes('Only base64-encoded PNG, JPEG, WebP, or GIF images are accepted')) {
-  fail('remote media URL rejection is missing')
+if (!/content:\s*z\.string\(\)[\s\S]{0,160}\.min\(1\)/.test(serverSource)) {
+  fail('text-only chat input contract is missing')
 }
 if (serverSource.includes('CHAT2API_ALLOW_REMOTE_MEDIA')) {
   fail('remote media URL opt-in must not be available')
@@ -84,7 +94,51 @@ if (deepSeekAdapter.includes('console.')) {
   fail('DeepSeek adapter contains runtime console diagnostics')
 }
 if (!deepSeekAdapter.includes("return provider.id === 'deepseek'")) {
-  fail('DeepSeek web adapter may capture the official API provider')
+  fail('DeepSeek web adapter provider guard is missing')
+}
+if (deepSeekAdapter.includes('sessionCache')) {
+  fail('DeepSeek requests may reuse an upstream conversation session')
+}
+if (!deepSeekAdapter.includes("const DEEPSEEK_API_BASE = 'https://chat.deepseek.com/api'")) {
+  fail('DeepSeek adapter no longer uses the fixed code-owned API base')
+}
+const storeTypes = readFileSync(resolve(root, 'src/main/store/types.ts'), 'utf8')
+if (storeTypes.includes('apiEndpoint') || storeTypes.includes('chatPath')) {
+  fail('provider endpoint configuration is exposed through the persistent store model')
+}
+if (databaseSource.includes('CREATE TABLE sessions')) {
+  fail('new databases still create the obsolete upstream session table')
+}
+
+const providerIndex = readFileSync(
+  resolve(root, 'src/main/providers/builtin/index.ts'),
+  'utf8',
+)
+const providerModuleImports = [...providerIndex.matchAll(/from\s+['"]\.\/([^'"]+)['"]/g)]
+  .map((match) => match[1])
+if (
+  providerModuleImports.length !== 1
+  || providerModuleImports[0] !== 'deepseek.ts'
+  || !/builtinProviders:[^=]+=\s*\[\s*deepseekConfig\s*,?\s*\]/s.test(providerIndex)
+) {
+  fail('provider registry contains a provider other than DeepSeek web')
+}
+
+const openAiRoutes = readFileSync(resolve(root, 'src/server/routes/openai.ts'), 'utf8')
+for (const unsupportedRoute of ['/v1/completions', '/v1/responses']) {
+  if (openAiRoutes.includes(unsupportedRoute)) {
+    fail(`unsupported compatibility route remains: ${unsupportedRoute}`)
+  }
+}
+for (const obsoletePath of [
+  'src/main/proxy/sessionManager.ts',
+  'src/main/proxy/stream.ts',
+  'src/main/proxy/toolCalling',
+  'src/shared/toolCalling.ts',
+]) {
+  if (existsSync(resolve(root, obsoletePath))) {
+    fail(`obsolete session or tool-emulation surface remains: ${obsoletePath}`)
+  }
 }
 
 const bundlePath = resolve(root, 'dist/server/bootstrap.js')

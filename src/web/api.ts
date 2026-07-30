@@ -91,13 +91,6 @@ export async function loadDashboard(): Promise<DashboardData> {
   return { overview, providers, accounts, apiKeys, activity, settings }
 }
 
-export function updateProvider(id: string, enabled: boolean): Promise<{ id: string; enabled: boolean }> {
-  return request(`/admin/api/providers/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ enabled }),
-  })
-}
-
 export function createAccount(input: {
   providerId: string
   name: string
@@ -155,7 +148,7 @@ export function deleteApiKey(id: string): Promise<void> {
 }
 
 export function updateSettings(
-  input: Pick<GatewaySettings, 'loadBalanceStrategy' | 'requestTimeout' | 'sessionTimeout' | 'deleteAfterTimeout'>,
+  input: Pick<GatewaySettings, 'loadBalanceStrategy'>,
 ): Promise<GatewaySettings> {
   return request('/admin/api/settings', {
     method: 'PATCH',

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RuntimeConfig } from '../../core/config.js'
 import { StoreManager } from '../../main/store/store.js'
@@ -30,6 +29,8 @@ const runtimeConfig: RuntimeConfig = {
   dailyQuota: 100,
   requestTimeoutMs: 10_000,
   firstByteTimeoutMs: 1_000,
+  streamIdleTimeoutMs: 1_000,
+  accountHealthIntervalMs: 0,
 }
 
 const request: ChatCompletionRequest = {
@@ -56,19 +57,17 @@ describe('provider routing engine', () => {
 
   afterEach(() => store.close())
 
-  function addAccount(name: string, providerId = 'deepseek'): Account {
+  function addAccount(name: string, todayUsed = 0): Account {
     const account: Account = {
       id: randomUUID(),
-      providerId,
+      providerId: 'deepseek',
       name,
-      credentials: providerId === 'deepseek-api'
-        ? { apiKey: `${name}-secret` }
-        : { token: `${name}-secret` },
+      credentials: { token: `${name}-secret` },
       status: 'active',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       requestCount: 0,
-      todayUsed: 0,
+      todayUsed,
     }
     store.addAccount(account)
     return account
@@ -85,7 +84,6 @@ describe('provider routing engine', () => {
     )
     const runtime: ProviderRuntimeAdapter = {
       forwardChatCompletion,
-      createTransformStream: () => new PassThrough(),
     }
     const engine = new ProviderRoutingEngine(runtimeConfig, runtime, store)
     const result = await engine.forward(request, context)
@@ -110,7 +108,6 @@ describe('provider routing engine', () => {
         if (attempts === 1) return { success: false, status: 502 }
         return { success: true, status: 200, body: { choices: [] } }
       },
-      createTransformStream: () => new PassThrough(),
     }
     const engine = new ProviderRoutingEngine(runtimeConfig, runtime, store)
     const result = await engine.forward(request, context)
@@ -129,49 +126,39 @@ describe('provider routing engine', () => {
     )
     const runtime: ProviderRuntimeAdapter = {
       forwardChatCompletion,
-      createTransformStream: () => new PassThrough(),
     }
     const engine = new ProviderRoutingEngine(runtimeConfig, runtime, store)
     const result = await engine.forward(request, context)
 
-    expect(result).toEqual({ status: 502, code: 'upstream_unavailable' })
+    expect(result).toEqual({ status: 502, code: 'provider_rejected_request' })
     expect(forwardChatCompletion).toHaveBeenCalledTimes(1)
   })
 
-  it('prefers the official API and falls back to the web session on throttling', async () => {
-    store.updateProvider('deepseek-api', { enabled: true })
-    const web = addAccount('web-fallback')
-    const official = addAccount('official-primary', 'deepseek-api')
-    const attemptedProviders: string[] = []
+  it('selects the least-used DeepSeek web account when configured', async () => {
+    const busyAccount = addAccount('busy-account', 50)
+    const quietAccount = addAccount('quiet-account', 2)
+    store.updateConfig({ loadBalanceStrategy: 'least-used' })
     const runtime: ProviderRuntimeAdapter = {
       async forwardChatCompletion(_request, selection) {
-        attemptedProviders.push(selection.provider.id)
-        if (selection.account.id === official.id) {
-          return { success: false, status: 429, retryAfterMs: 30_000 }
-        }
-        return { success: true, status: 200, body: { choices: [] } }
+        return { success: true, status: 200, body: { accountId: selection.account.id } }
       },
-      createTransformStream: () => new PassThrough(),
     }
     const engine = new ProviderRoutingEngine(runtimeConfig, runtime, store)
     const result = await engine.forward(request, context)
 
     expect(result).not.toHaveProperty('code')
     if ('code' in result) return
-    expect(attemptedProviders).toEqual(['deepseek-api', 'deepseek'])
-    expect(result.selection.account.id).toBe(web.id)
+    expect(result.selection.account.id).toBe(quietAccount.id)
+    expect(result.selection.account.id).not.toBe(busyAccount.id)
     result.release(true)
   })
 
-  it('keeps web-search requests on providers that explicitly support web search', async () => {
-    store.updateProvider('deepseek-api', { enabled: true })
+  it('keeps web-search requests on the DeepSeek web provider', async () => {
     const web = addAccount('web-search')
-    addAccount('official', 'deepseek-api')
     const runtime: ProviderRuntimeAdapter = {
       async forwardChatCompletion(_request, selection) {
         return { success: true, status: 200, body: { provider: selection.provider.id } }
       },
-      createTransformStream: () => new PassThrough(),
     }
     const engine = new ProviderRoutingEngine(runtimeConfig, runtime, store)
     const result = await engine.forward({ ...request, web_search: true }, context)
@@ -189,7 +176,6 @@ describe('provider routing engine', () => {
       async forwardChatCompletion() {
         return { success: false, status: 429, retryAfterMs: 20_000 }
       },
-      createTransformStream: () => new PassThrough(),
     }
     const engine = new ProviderRoutingEngine(runtimeConfig, runtime, store)
     const result = await engine.forward(request, context)

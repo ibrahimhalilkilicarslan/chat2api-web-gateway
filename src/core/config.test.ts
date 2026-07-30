@@ -19,6 +19,8 @@ describe('runtime configuration', () => {
     expect(config.adminOrigins).toEqual(['https://gateway.example.com'])
     expect(config.trustProxy).toBe(1)
     expect(config.maxBodyBytes).toBe(2 * 1024 * 1024)
+    expect(config.streamIdleTimeoutMs).toBe(90_000)
+    expect(config.accountHealthIntervalMs).toBe(15 * 60_000)
   })
 
   it('fails closed when required secrets are absent', () => {

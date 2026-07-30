@@ -1,38 +1,16 @@
 import { pipeline } from 'node:stream'
-import { randomUUID } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import { ZodError, z } from 'zod'
+import { ZodError } from 'zod'
 import type { ChatCompletionRequest, ProxyContext } from '../../main/proxy/types.js'
 import { storeManager } from '../../main/store/store.js'
-import { assertModelAllowed, requireApiScope } from '../security/api-auth.js'
-import { parseChatRequest } from '../schemas/chat.js'
 import { ConcurrencyGate } from '../gateway/concurrency.js'
 import {
-  ProviderRoutingEngine,
   isRoutingFailure,
+  ProviderRoutingEngine,
   type RoutedResult,
 } from '../gateway/router.js'
-
-const completionSchema = z.object({
-  model: z.string().min(1).max(256),
-  prompt: z.union([z.string().max(200_000), z.array(z.string().max(200_000)).max(16)]),
-  stream: z.boolean().optional(),
-  max_tokens: z.number().int().min(1).max(65_536).optional(),
-  temperature: z.number().min(0).max(2).optional(),
-})
-
-const responseSchema = z.object({
-  model: z.string().min(1).max(256),
-  input: z.union([
-    z.string().max(200_000),
-    z.array(z.object({
-      role: z.enum(['system', 'user', 'assistant']),
-      content: z.string().max(200_000),
-    })).min(1).max(100),
-  ]),
-  stream: z.boolean().optional().default(false),
-  max_output_tokens: z.number().int().min(1).max(65_536).optional(),
-})
+import { parseChatRequest } from '../schemas/chat.js'
+import { assertModelAllowed, requireApiScope } from '../security/api-auth.js'
 
 function openAiError(
   reply: FastifyReply,
@@ -46,35 +24,40 @@ function openAiError(
   })
 }
 
-function contextFor(request: FastifyRequest, chat: ChatCompletionRequest): ProxyContext {
+function contextFor(
+  request: FastifyRequest,
+  chat: ChatCompletionRequest,
+  signal: AbortSignal,
+): ProxyContext {
   return {
     requestId: request.id,
     model: chat.model,
     startTime: Date.now(),
     isStream: chat.stream === true,
+    signal,
   }
 }
 
-function extractText(body: unknown): string {
-  if (!body || typeof body !== 'object') return ''
-  const choices = Reflect.get(body, 'choices')
-  if (!Array.isArray(choices)) return ''
-  const first = choices[0]
-  if (!first || typeof first !== 'object') return ''
-  const message = Reflect.get(first, 'message')
-  if (!message || typeof message !== 'object') return ''
-  const content = Reflect.get(message, 'content')
-  return typeof content === 'string' ? content : ''
-}
-
-function extractFinishReason(body: unknown): string {
-  if (!body || typeof body !== 'object') return 'stop'
-  const choices = Reflect.get(body, 'choices')
-  if (!Array.isArray(choices)) return 'stop'
-  const first = choices[0]
-  if (!first || typeof first !== 'object') return 'stop'
-  const finishReason = Reflect.get(first, 'finish_reason')
-  return typeof finishReason === 'string' ? finishReason : 'stop'
+function validationError(reply: FastifyReply, error: ZodError): FastifyReply {
+  const unsupported = error.issues
+    .filter((issue) => issue.code === 'unrecognized_keys')
+    .flatMap((issue) => issue.keys)
+  if (unsupported.length > 0) {
+    return openAiError(
+      reply,
+      400,
+      `Unsupported request fields: ${[...new Set(unsupported)].sort().join(', ')}.`,
+      'unsupported_feature',
+      'invalid_request_error',
+    )
+  }
+  return openAiError(
+    reply,
+    400,
+    'The request body is invalid.',
+    'invalid_request',
+    'invalid_request_error',
+  )
 }
 
 export async function registerOpenAiRoutes(
@@ -83,22 +66,25 @@ export async function registerOpenAiRoutes(
   concurrency: ConcurrencyGate,
 ): Promise<void> {
   app.get('/v1/models', { preHandler: requireApiScope('models') }, async (_request, reply) => {
-    const models = new Set<string>()
-    for (const provider of storeManager.getProviders().filter((entry) => entry.enabled)) {
-      if (storeManager.getAccountsByProviderId(provider.id).some((account) => account.status === 'active')) {
-        for (const model of storeManager.getEffectiveModels(provider.id)) {
-          models.add(model.displayName)
-        }
-      }
-    }
+    const provider = storeManager.getProviderById('deepseek')
+    const hasActiveAccount = storeManager
+      .getAccountsByProviderId('deepseek')
+      .some((account) => account.status === 'active')
+    const models = provider?.enabled && hasActiveAccount
+      ? storeManager.getEffectiveModels('deepseek')
+      : []
+
     return reply.send({
       object: 'list',
-      data: [...models].sort().map((id) => ({
-        id,
-        object: 'model',
-        created: 0,
-        owned_by: 'chat2api',
-      })),
+      data: models
+        .map((model) => model.displayName)
+        .sort()
+        .map((id) => ({
+          id,
+          object: 'model',
+          created: 0,
+          owned_by: 'deepseek-web',
+        })),
     })
   })
 
@@ -107,84 +93,16 @@ export async function registerOpenAiRoutes(
       const chat = parseChatRequest(request.body)
       return await executeChat(request, reply, chat, routing, concurrency)
     } catch (error) {
-      if (error instanceof ZodError) {
-        return openAiError(reply, 400, 'The request body is invalid.', 'invalid_request', 'invalid_request_error')
-      }
+      if (error instanceof ZodError) return validationError(reply, error)
       request.log.warn({ requestId: request.id }, 'chat request validation failed')
-      return openAiError(reply, 400, 'The request could not be accepted.', 'invalid_request', 'invalid_request_error')
+      return openAiError(
+        reply,
+        400,
+        'The request could not be accepted.',
+        'invalid_request',
+        'invalid_request_error',
+      )
     }
-  })
-
-  app.post('/v1/completions', { preHandler: requireApiScope('chat') }, async (request, reply) => {
-    const parsed = completionSchema.safeParse(request.body)
-    if (!parsed.success) {
-      return openAiError(reply, 400, 'The request body is invalid.', 'invalid_request', 'invalid_request_error')
-    }
-    const prompt = Array.isArray(parsed.data.prompt) ? parsed.data.prompt.join('\n') : parsed.data.prompt
-    const chat: ChatCompletionRequest = {
-      model: parsed.data.model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: parsed.data.stream,
-      max_tokens: parsed.data.max_tokens,
-      temperature: parsed.data.temperature,
-    }
-    if (chat.stream) {
-      return openAiError(reply, 400, 'Streaming legacy completions are not supported.', 'unsupported_stream')
-    }
-    const result = await executeChat(request, reply, chat, routing, concurrency, false)
-    if (reply.sent || !result || typeof result !== 'object') return result
-    return reply.send({
-      id: `cmpl_${randomUUID().replaceAll('-', '')}`,
-      object: 'text_completion',
-      created: Math.floor(Date.now() / 1000),
-      model: chat.model,
-      choices: [{
-        text: extractText(result),
-        index: 0,
-        logprobs: null,
-        finish_reason: extractFinishReason(result),
-      }],
-      usage: Reflect.get(result, 'usage') ?? null,
-    })
-  })
-
-  app.post('/v1/responses', { preHandler: requireApiScope('chat') }, async (request, reply) => {
-    const parsed = responseSchema.safeParse(request.body)
-    if (!parsed.success) {
-      return openAiError(reply, 400, 'The request body is invalid.', 'invalid_request', 'invalid_request_error')
-    }
-    if (parsed.data.stream) {
-      return openAiError(reply, 400, 'Streaming Responses API is not enabled in this release.', 'unsupported_stream')
-    }
-    const messages = typeof parsed.data.input === 'string'
-      ? [{ role: 'user' as const, content: parsed.data.input }]
-      : parsed.data.input
-    const chat: ChatCompletionRequest = {
-      model: parsed.data.model,
-      messages,
-      stream: false,
-      max_tokens: parsed.data.max_output_tokens,
-    }
-    const raw = await executeChat(request, reply, chat, routing, concurrency, false)
-    if (reply.sent || !raw || typeof raw !== 'object') return raw
-    const outputText = extractText(raw)
-    const responseId = `resp_${randomUUID().replaceAll('-', '')}`
-    return reply.send({
-      id: responseId,
-      object: 'response',
-      created_at: Math.floor(Date.now() / 1000),
-      status: 'completed',
-      model: chat.model,
-      output: [{
-        id: `msg_${randomUUID().replaceAll('-', '')}`,
-        type: 'message',
-        status: 'completed',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: outputText, annotations: [] }],
-      }],
-      output_text: outputText,
-      usage: Reflect.get(raw, 'usage') ?? null,
-    })
   })
 }
 
@@ -194,16 +112,33 @@ async function executeChat(
   chat: ChatCompletionRequest,
   routing: ProviderRoutingEngine,
   concurrency: ConcurrencyGate,
-  sendReply = true,
 ): Promise<unknown> {
   if (!assertModelAllowed(request, chat.model)) {
-    return openAiError(reply, 403, 'This API key cannot use the requested model.', 'model_not_allowed')
+    return openAiError(
+      reply,
+      403,
+      'This API key cannot use the requested model.',
+      'model_not_allowed',
+    )
   }
 
   const releaseGlobal = concurrency.tryAcquire()
   if (!releaseGlobal) {
-    return openAiError(reply, 503, 'The gateway is at capacity. Try again shortly.', 'gateway_at_capacity')
+    return openAiError(
+      reply,
+      503,
+      'The gateway is at capacity. Try again shortly.',
+      'gateway_at_capacity',
+    )
   }
+
+  const controller = new AbortController()
+  let settled = false
+  const abort = () => {
+    if (!settled && !reply.raw.writableEnded) controller.abort()
+  }
+  request.raw.once('aborted', abort)
+  reply.raw.once('close', abort)
 
   const requestLog = storeManager.startRequestLog({
     requestId: request.id,
@@ -216,9 +151,19 @@ async function executeChat(
   const startedAt = Date.now()
   let routed: RoutedResult | undefined
 
+  const detachAbortListeners = () => {
+    request.raw.off('aborted', abort)
+    reply.raw.off('close', abort)
+  }
+
   try {
-    const result = await routing.forward(chat, contextFor(request, chat))
+    const result = await routing.forward(
+      chat,
+      contextFor(request, chat, controller.signal),
+    )
     if (isRoutingFailure(result)) {
+      settled = true
+      detachAbortListeners()
       if (result.retryAfterSeconds !== undefined) {
         reply.header('Retry-After', String(result.retryAfterSeconds))
       }
@@ -232,7 +177,7 @@ async function executeChat(
       return openAiError(
         reply,
         result.status,
-        result.status === 429 ? 'All matching providers are rate limited.' : 'No upstream provider is currently available.',
+        publicErrorMessage(result.code),
         result.code,
       )
     }
@@ -250,24 +195,40 @@ async function executeChat(
       })
       reply.raw.write(result.primed.firstChunk)
 
-      request.raw.once('aborted', () => result.primed?.stream.destroy())
+      const disconnect = () => {
+        if (reply.raw.writableEnded) return
+        controller.abort()
+        result.primed?.stream.destroy()
+      }
+      request.raw.once('aborted', disconnect)
+      reply.raw.once('close', disconnect)
       pipeline(result.primed.stream, reply.raw, (error) => {
+        settled = true
+        request.raw.off('aborted', disconnect)
+        reply.raw.off('close', disconnect)
+        detachAbortListeners()
         const success = !error
         result.release(success)
         releaseGlobal()
         storeManager.finishRequestLog(requestLog.id, {
           status: success ? 'success' : 'error',
-          statusCode: success ? 200 : 502,
+          statusCode: success ? 200 : controller.signal.aborted ? 499 : 502,
           latency: Date.now() - startedAt,
           actualModel: result.selection.actualModel,
           providerId: result.selection.provider.id,
           accountId: result.selection.account.id,
-          errorCode: success ? undefined : 'stream_interrupted',
+          errorCode: success
+            ? undefined
+            : controller.signal.aborted
+              ? 'client_aborted'
+              : 'stream_interrupted',
         })
       })
       return undefined
     }
 
+    settled = true
+    detachAbortListeners()
     result.release(true)
     releaseGlobal()
     storeManager.finishRequestLog(requestLog.id, {
@@ -278,19 +239,49 @@ async function executeChat(
       providerId: result.selection.provider.id,
       accountId: result.selection.account.id,
     })
-    return sendReply ? reply.send(result.result.body) : result.result.body
+    return reply.send(result.result.body)
   } catch {
+    settled = true
+    detachAbortListeners()
     routed?.release(false)
     releaseGlobal()
+    const aborted = controller.signal.aborted
     storeManager.finishRequestLog(requestLog.id, {
       status: 'error',
-      statusCode: 500,
+      statusCode: aborted ? 499 : 500,
       latency: Date.now() - startedAt,
       actualModel: routed?.selection.actualModel,
       providerId: routed?.selection.provider.id,
       accountId: routed?.selection.account.id,
-      errorCode: 'gateway_error',
+      errorCode: aborted ? 'client_aborted' : 'gateway_error',
     })
-    return openAiError(reply, 500, 'The gateway could not complete the request.', 'gateway_error')
+    if (reply.sent || reply.raw.destroyed) return undefined
+    return openAiError(
+      reply,
+      aborted ? 499 : 500,
+      aborted
+        ? 'The client closed the request.'
+        : 'The gateway could not complete the request.',
+      aborted ? 'client_aborted' : 'gateway_error',
+    )
   }
+}
+
+function publicErrorMessage(code: string): string {
+  if (code === 'provider_authentication_failed') {
+    return 'The configured DeepSeek session requires attention.'
+  }
+  if (code === 'provider_rate_limited') {
+    return 'DeepSeek is rate limited. Try again later.'
+  }
+  if (code === 'provider_timeout') {
+    return 'DeepSeek did not respond in time.'
+  }
+  if (code === 'provider_protocol_changed') {
+    return 'The DeepSeek web protocol changed and requires an adapter update.'
+  }
+  if (code === 'no_available_account') {
+    return 'No healthy DeepSeek account is currently available.'
+  }
+  return 'DeepSeek is currently unavailable.'
 }

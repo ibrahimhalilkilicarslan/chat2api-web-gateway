@@ -14,13 +14,12 @@
   },
   "include": [
     "src/core/**/*.ts",
-    "src/legacy/**/*.d.ts",
     "src/server/**/*.ts",
     "src/main/providers/builtin/**/*.ts",
-    "src/main/proxy/types.ts",
+    "src/main/lib/**/*.ts",
+    "src/main/proxy/**/*.ts",
     "src/main/store/store.ts",
     "src/main/store/types.ts",
-    "src/shared/toolCalling.ts",
     "src/types/**/*.d.ts",
     "tsup.config.ts",
     "vitest.config.ts"

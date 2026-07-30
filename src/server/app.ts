@@ -8,13 +8,15 @@ import rateLimit from '@fastify/rate-limit'
 import staticFiles from '@fastify/static'
 import Fastify, { LogController, type FastifyInstance } from 'fastify'
 import type { RuntimeConfig } from '../core/config.js'
-import { configureProviderRuntime } from '../legacy/provider-runtime.js'
+import { requestForwarder } from '../main/proxy/forwarder.js'
 import { storeManager } from '../main/store/store.js'
 import { ConcurrencyGate } from './gateway/concurrency.js'
 import { ProviderRoutingEngine } from './gateway/router.js'
 import { registerAdminRoutes } from './routes/admin.js'
 import { registerOpenAiRoutes } from './routes/openai.js'
 import type { AccountHealthChecker } from './providers/account-health.js'
+import { accountHealthRegistry } from './providers/account-health-registry.js'
+import { startAccountHealthMonitor } from './providers/account-health-monitor.js'
 import { AdminAuth } from './security/admin-auth.js'
 
 export interface AppDependencies {
@@ -68,13 +70,7 @@ export async function buildApp(
     config.rateLimitRpm,
     config.dailyQuota,
   )
-  storeManager.updateConfig({
-    requestTimeout: config.requestTimeoutMs,
-    retryCount: 0,
-    enableApiKey: true,
-    apiKeys: [],
-  })
-  configureProviderRuntime(config)
+  requestForwarder.configure({ requestTimeoutMs: config.requestTimeoutMs })
 
   await app.register(cookie)
   await app.register(rateLimit, {
@@ -151,6 +147,13 @@ export async function buildApp(
     concurrency,
     dependencies.accountHealthChecker,
   )
+  const stopAccountHealthMonitor = startAccountHealthMonitor({
+    intervalMs: config.accountHealthIntervalMs,
+    checker: dependencies.accountHealthChecker,
+    onError(error) {
+      app.log.warn({ errorType: error.name }, 'account health monitor failed')
+    },
+  })
 
   const webRoot = resolve(process.cwd(), 'dist/web')
   if (existsSync(webRoot)) {
@@ -204,6 +207,8 @@ export async function buildApp(
   })
 
   app.addHook('onClose', async () => {
+    stopAccountHealthMonitor()
+    accountHealthRegistry.clear()
     storeManager.flushPendingWrites()
     storeManager.close()
   })

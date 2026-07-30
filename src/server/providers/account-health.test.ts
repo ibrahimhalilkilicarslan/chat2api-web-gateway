@@ -7,9 +7,7 @@ function provider(id: string): Provider {
     id,
     name: id,
     type: 'builtin',
-    authType: 'token',
-    apiEndpoint: 'https://code-owned.example',
-    headers: {},
+    authType: 'userToken',
     enabled: true,
     createdAt: 1,
     updatedAt: 1,
@@ -29,11 +27,14 @@ function account(providerId: string, credentials: Record<string, string>): Accou
 }
 
 describe('provider account health', () => {
-  it('checks the official API against the fixed models endpoint', async () => {
-    const httpGet = vi.fn(async () => ({ status: 200, data: { object: 'list', data: [] } }))
+  it('checks the DeepSeek web token against the fixed account endpoint', async () => {
+    const httpGet = vi.fn(async () => ({
+      status: 200,
+      data: { data: { biz_data: { token: 'short-lived-access-token' } } },
+    }))
     const health = await checkProviderAccount(
-      provider('deepseek-api'),
-      account('deepseek-api', { apiKey: 'official-key' }),
+      provider('deepseek'),
+      account('deepseek', { token: 'web-session-token' }),
       httpGet,
     )
 
@@ -43,10 +44,10 @@ describe('provider account health', () => {
       code: 'provider_healthy',
     })
     expect(httpGet).toHaveBeenCalledWith(
-      'https://api.deepseek.com/models',
+      'https://chat.deepseek.com/api/v0/users/current',
       expect.objectContaining({
         headers: expect.objectContaining({
-          Authorization: 'Bearer official-key',
+          Authorization: 'Bearer web-session-token',
         }),
       }),
     )
@@ -54,8 +55,8 @@ describe('provider account health', () => {
 
   it('maps provider throttling without exposing an upstream payload', async () => {
     const health = await checkProviderAccount(
-      provider('deepseek-api'),
-      account('deepseek-api', { apiKey: 'official-key' }),
+      provider('deepseek'),
+      account('deepseek', { token: 'web-session-token' }),
       async () => ({ status: 429 }),
     )
 
@@ -64,7 +65,7 @@ describe('provider account health', () => {
       status: 'rate_limited',
       code: 'provider_rate_limited',
     })
-    expect(JSON.stringify(health)).not.toContain('official-key')
+    expect(JSON.stringify(health)).not.toContain('web-session-token')
   })
 
   it('does not probe arbitrary provider endpoints', async () => {

@@ -28,8 +28,6 @@ export interface Provider {
   credentialFields: CredentialField[]
   accountCount: number
   activeAccountCount: number
-  integrationMode?: 'official-api' | 'web-session'
-  routingPriority: number
   healthCheckSupported: boolean
 }
 
@@ -56,6 +54,8 @@ export interface Account {
   requestCount: number
   dailyLimit?: number
   todayUsed: number
+  health: AccountHealthResult | null
+  cooldownUntil: number | null
 }
 
 export interface ApiKeyRecord {
@@ -92,10 +92,10 @@ export interface RequestActivity {
 }
 
 export interface GatewaySettings {
-  loadBalanceStrategy: 'round-robin' | 'fill-first' | 'failover'
+  loadBalanceStrategy: 'round-robin' | 'least-used' | 'failover'
   requestTimeout: number
-  sessionTimeout: number
-  deleteAfterTimeout: boolean
+  streamIdleTimeout: number
+  accountHealthInterval: number
   security: {
     credentialEncryption: string
     apiKeyStorage: string
@@ -103,6 +103,8 @@ export interface GatewaySettings {
     customProvidersEnabled: boolean
     remoteMediaEnabled: boolean
     secureCookies: boolean
+    supportedProvider: string
+    supportedInput: string
   }
 }
 

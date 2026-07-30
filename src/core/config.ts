@@ -40,6 +40,8 @@ const environmentSchema = z.object({
   CHAT2API_DAILY_QUOTA: z.coerce.number().int().min(1).max(10_000_000).default(1000),
   CHAT2API_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(15 * 60_000).default(120_000),
   CHAT2API_FIRST_BYTE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(5 * 60_000).default(30_000),
+  CHAT2API_STREAM_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(5 * 60_000).default(90_000),
+  CHAT2API_ACCOUNT_HEALTH_INTERVAL_MS: z.coerce.number().int().min(0).max(24 * 60 * 60_000).default(15 * 60_000),
 })
 
 export interface RuntimeConfig {
@@ -62,6 +64,8 @@ export interface RuntimeConfig {
   dailyQuota: number
   requestTimeoutMs: number
   firstByteTimeoutMs: number
+  streamIdleTimeoutMs: number
+  accountHealthIntervalMs: number
 }
 
 function parseMasterKey(value: string): Buffer {
@@ -119,5 +123,7 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     dailyQuota: parsed.data.CHAT2API_DAILY_QUOTA,
     requestTimeoutMs: parsed.data.CHAT2API_REQUEST_TIMEOUT_MS,
     firstByteTimeoutMs: parsed.data.CHAT2API_FIRST_BYTE_TIMEOUT_MS,
+    streamIdleTimeoutMs: parsed.data.CHAT2API_STREAM_IDLE_TIMEOUT_MS,
+    accountHealthIntervalMs: parsed.data.CHAT2API_ACCOUNT_HEALTH_INTERVAL_MS,
   }
 }

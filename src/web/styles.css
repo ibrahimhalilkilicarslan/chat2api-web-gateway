@@ -131,25 +131,20 @@ main { min-width: 0; }
 .provider-summary-list + .secondary-button { width: calc(100% - 34px); margin: 0 17px 17px; }
 .provider-avatar { width: 31px; height: 31px; border-radius: 9px; display: grid; place-items: center; background: #212a35; color: #cbd5e1; font-size: 9px; font-weight: 800; }
 
-.provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.provider-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .provider-card { padding: 18px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--surface); }
 .provider-card-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: start; }
 .provider-card-head .provider-avatar { width: 39px; height: 39px; }
 .provider-card h2 { margin: 1px 0 4px; font-size: 13px; }
 .provider-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .integration-badge { display: inline-flex; margin-top: 7px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted-strong); font-size: 9px; font-weight: 700; }
-.integration-badge.official-api { border-color: color-mix(in srgb, var(--success) 35%, var(--line)); color: var(--success); }
-.switch { width: 35px; height: 20px; padding: 2px; border: 0; border-radius: 999px; background: #303946; }
-.switch i { display: block; width: 16px; height: 16px; border-radius: 50%; background: #8b97a7; transition: transform .18s ease; }
-.switch.is-on { background: rgba(52,211,153,.28); }
-.switch.is-on i { transform: translateX(15px); background: var(--accent); }
 .model-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 15px 0; }
 .model-chips span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted-strong); background: #131922; font-family: "JetBrains Mono Variable"; font-size: 8px; }
 .account-list { display: grid; gap: 7px; margin-bottom: 12px; }
 .account-row { min-height: 48px; padding: 8px 9px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-soft); border-radius: 9px; background: #0f141b; }
 .account-row > div:nth-child(2) { min-width: 0; flex: 1; }
 .account-row strong { display: block; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.account-row span { color: var(--muted); font-size: 9px; }
+.account-row span { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
 .status-dot.active { background: var(--accent); box-shadow: 0 0 0 4px rgba(52,211,153,.08); }
 .status-dot.error, .status-dot.expired { background: var(--danger); }
@@ -207,6 +202,7 @@ td code { color: #9ee8ca; font-size: 9px; }
 .credential-box { margin: 5px 0 17px; padding: 14px; border: 1px solid rgba(52,211,153,.15); border-radius: 11px; background: rgba(52,211,153,.025); }
 .credential-box > div:first-child { display: flex; gap: 7px; color: var(--accent); font-size: 8px; margin-bottom: 13px; }
 .credential-box .field:last-child { margin-bottom: 0; }
+.credential-box pre { margin: 0 0 12px; padding: 11px; overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 8px; background: #0a0f14; color: #b7c4d4; font-size: 9px; line-height: 1.65; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 .model-selector { max-height: 200px; padding: 8px; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border: 1px solid var(--line); border-radius: 9px; background: #0d1218; }
 .model-selector label { padding: 7px; display: flex; gap: 7px; align-items: center; font-size: 8px; font-family: "JetBrains Mono Variable"; font-weight: 450; }
@@ -268,6 +264,8 @@ td code { color: #9ee8ca; font-size: 9px; }
   .metric-icon { width: 29px; height: 29px; right: 11px; top: 11px; }
   .metric-card > strong { margin-top: 19px; font-size: 17px; }
   .form-grid, .model-selector { grid-template-columns: 1fr; }
+  .account-row { flex-wrap: wrap; }
+  .account-row > div:nth-child(2) { flex-basis: calc(100% - 24px); }
   .modal-layer { padding: 0; align-items: end; }
   .modal { max-height: 92vh; border-radius: 17px 17px 0 0; border-bottom: 0; }
   .modal-actions { position: sticky; bottom: -20px; padding: 13px 0 20px; background: #121821; }

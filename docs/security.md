@@ -2,38 +2,37 @@
 
 ## Implemented controls
 
-- Mandatory strong startup secrets and exact admin origins
-- AES-256-GCM provider credential vault with authenticated envelopes
-- Startup validation of every credential envelope; a wrong master key fails closed
-- Hash-only client API key storage
-- Signed, expiring admin sessions and SameSite Strict cookies
-- CSRF protection for all admin mutations
-- Bearer-only API authentication, RPM limits, daily quotas, model allowlists
-- Strict request schemas and a 2 MiB default body limit
-- Global and account-level concurrency controls
-- Circuit breakers and bounded pre-first-byte failover
-- Metadata-only request/audit logs
-- Helmet CSP, HSTS in production, no-referrer, and frame denial
-- Custom provider prohibition and complete remote-media URL rejection
+- Strong startup secrets and exact admin-origin allowlist
+- AES-256-GCM credential vault; every envelope is verified at startup
+- Hash-only client API keys, scoped models, RPM limits, and daily quotas
+- Signed expiring admin sessions, SameSite Strict cookies, and CSRF mutations
+- Strict text-only request schema and bounded request bodies
+- Request, first-byte, and stream-idle timeouts with client-abort propagation
+- Fresh upstream conversation per request and best-effort deletion on every exit
+- Gateway-owned opaque response IDs
+- Account concurrency limits, failover, cooldowns, and credential health checks
+- Metadata-only request and audit logs
+- Fixed provider endpoints; no custom provider, media, file, or tool surface
+- Helmet CSP, production HSTS, no-referrer, and frame denial
 - Non-root, read-only, capability-free container
-- Immutable Dockerfile frontend and Node base-image digests
-- Commit-pinned GitHub Actions and scheduled dependency update proposals
-- Production removal of legacy adapter console diagnostics
+- Commit-pinned CI actions and production dependency audit
 
-## Required operating controls
+## Operating controls
 
-- Put `/admin/` behind Tailscale, Cloudflare Access, or an equivalent identity-aware proxy.
-- Use dedicated provider accounts with the minimum value and permissions possible.
-- Keep the SQLite volume encrypted and backed up by the infrastructure layer.
-- Never send provider credentials through chat, tickets, screenshots, or logs.
-- Rotate API/admin/session secrets after suspected exposure.
-- Keep the master encryption key stable and separately backed up.
-- Review provider terms and obtain authorization before business-critical use.
+- Restrict `/admin/` with Tailscale or an identity-aware proxy.
+- Use a dedicated DeepSeek account; do not reuse a personal high-value account.
+- Do not use multiple accounts to evade provider quotas or controls.
+- Keep the SQLite volume encrypted and export verified backups off-host.
+- Store the master key separately from database backups.
+- Never paste tokens into source, chat, screenshots, tickets, or command history.
+- Review DeepSeek terms and obtain approval appropriate to the workload.
+- Rotate client/admin/session/provider credentials after suspected exposure.
 
-## Known residual risks
+## Residual risks
 
-Provider web endpoints are undocumented and can change without notice. Session
-tokens can grant broad provider-account access. Local in-memory RPM and circuit
-state reset after restart. SQLite is suitable for a single replica only.
+DeepSeek web endpoints and anti-automation challenges are undocumented and can
+change without notice. A web token may grant broad account access. Health checks
+prove only that the token currently works, not future compatibility. In-memory
+rate/circuit state resets on restart, and SQLite supports one active replica.
 
-No gateway can make unofficial provider automation equivalent to an official API.
+This gateway does not make web-session automation equivalent to an official API.

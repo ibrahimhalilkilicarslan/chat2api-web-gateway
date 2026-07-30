@@ -10,55 +10,65 @@ import {
   checkProviderAccount,
   type AccountHealthChecker,
 } from '../providers/account-health.js'
+import { accountHealthRegistry } from '../providers/account-health-registry.js'
 import type { AdminAuth } from '../security/admin-auth.js'
 
 const loginSchema = z.object({
   token: z.string().min(1).max(512),
-})
+}).strict()
 
-const providerUpdateSchema = z.object({
-  enabled: z.boolean(),
-})
+const providerCredentialSchema = z.record(
+  z.string(),
+  z.string().min(1).max(16_384),
+)
 
 const accountCreateSchema = z.object({
-  providerId: z.string().min(1).max(64),
+  providerId: z.literal('deepseek'),
   name: z.string().trim().min(1).max(120),
   email: z.string().trim().email().max(254).optional().or(z.literal('')),
-  credentials: z.record(z.string(), z.string().min(1).max(200_000)),
+  credentials: providerCredentialSchema,
   dailyLimit: z.number().int().min(1).max(1_000_000).optional(),
-})
+}).strict()
 
 const accountUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   email: z.string().trim().email().max(254).optional().or(z.literal('')),
   status: z.enum(['active', 'inactive']).optional(),
-  credentials: z.record(z.string(), z.string().min(1).max(200_000)).optional(),
+  credentials: providerCredentialSchema.optional(),
   dailyLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
-})
+}).strict()
+
+const supportedModelIds = new Set(
+  BUILTIN_PROVIDERS.flatMap((provider) => provider.supportedModels ?? []),
+)
 
 const apiKeyCreateSchema = z.object({
   name: z.string().trim().min(1).max(120).refine(
     (value) => value.toLowerCase() !== 'bootstrap key',
     'This API key name is reserved.',
   ),
-  scopes: z.array(z.enum(['chat', 'models'])).min(1).max(2),
-  modelAllowlist: z.array(z.string().min(1).max(256)).max(200).default([]),
+  scopes: z.array(z.enum(['chat', 'models']))
+    .min(1)
+    .max(2)
+    .refine((scopes) => new Set(scopes).size === scopes.length),
+  modelAllowlist: z.array(z.string().min(1).max(256))
+    .max(200)
+    .refine((models) => models.every((model) => supportedModelIds.has(model)))
+    .default([]),
   requestsPerMinute: z.number().int().min(1).max(100_000),
   dailyQuota: z.number().int().min(1).max(10_000_000),
-})
+}).strict()
 
 const apiKeyUpdateSchema = z.object({
   enabled: z.boolean(),
-})
+}).strict()
 
 const settingsSchema = z.object({
-  loadBalanceStrategy: z.enum(['round-robin', 'fill-first', 'failover']).optional(),
-  requestTimeout: z.number().int().min(1000).max(15 * 60_000).optional(),
-  sessionTimeout: z.number().int().min(1).max(24 * 60).optional(),
-  deleteAfterTimeout: z.boolean().optional(),
-})
+  loadBalanceStrategy: z.enum(['round-robin', 'least-used', 'failover']).optional(),
+}).strict()
 
-function safeAccount(account: Account) {
+function safeAccount(account: Account, cooldownUntil?: number) {
+  const health = accountHealthRegistry.get(account.id)
   return {
     id: account.id,
     providerId: account.providerId,
@@ -73,6 +83,17 @@ function safeAccount(account: Account) {
     requestCount: account.requestCount ?? 0,
     dailyLimit: account.dailyLimit,
     todayUsed: account.todayUsed ?? 0,
+    health: health
+      ? {
+          healthy: health.healthy,
+          status: health.status,
+          code: health.code,
+          message: health.message,
+          checkedAt: health.checkedAt,
+          latencyMs: health.latencyMs,
+        }
+      : null,
+    cooldownUntil: cooldownUntil && cooldownUntil > Date.now() ? cooldownUntil : null,
   }
 }
 
@@ -194,11 +215,9 @@ export async function registerAdminRoutes(
     return reply.send(BUILTIN_PROVIDERS.map((provider) => ({
       id: provider.id,
       name: stored.get(provider.id)?.name ?? provider.name,
-      enabled: stored.get(provider.id)?.enabled ?? false,
+      enabled: true,
       description: provider.description,
-      integrationMode: provider.integrationMode,
-      routingPriority: provider.routingPriority ?? 50,
-      healthCheckSupported: provider.id === 'deepseek' || provider.id === 'deepseek-api',
+      healthCheckSupported: true,
       supportedModels: storeManager.getEffectiveModels(provider.id).map((model) => model.displayName),
       credentialFields: provider.credentialFields.map((field) => ({
         name: field.name,
@@ -215,27 +234,15 @@ export async function registerAdminRoutes(
     })))
   })
 
-  app.patch('/admin/api/providers/:id', { preHandler: adminAuth.requireMutation }, async (request, reply) => {
-    const id = z.string().min(1).max(64).safeParse((request.params as { id?: unknown }).id)
-    const body = providerUpdateSchema.safeParse(request.body)
-    if (!id.success || !body.success) {
-      return reply.code(400).send({ error: { code: 'invalid_request', message: 'Invalid provider update.' } })
-    }
-    const provider = storeManager.updateProvider(id.data, { enabled: body.data.enabled })
-    if (!provider) return reply.code(404).send({ error: { code: 'not_found', message: 'Provider not found.' } })
-    storeManager.addAuditLog({
-      actor: 'admin',
-      action: 'provider.update',
-      targetType: 'provider',
-      targetId: id.data,
-      outcome: 'success',
-      metadata: { enabled: body.data.enabled },
-    })
-    return reply.send({ id: provider.id, enabled: provider.enabled })
-  })
-
   app.get('/admin/api/accounts', { preHandler: adminAuth.requireSession }, async (_request, reply) => {
-    return reply.send(storeManager.getAccounts(false).map(safeAccount))
+    const cooldowns = new Map(
+      routing.getState().openCircuits.map((entry) => [entry.accountId, entry.openedUntil]),
+    )
+    return reply.send(
+      storeManager
+        .getAccounts(false)
+        .map((account) => safeAccount(account, cooldowns.get(account.id))),
+    )
   })
 
   app.post('/admin/api/accounts/:id/test', {
@@ -258,6 +265,7 @@ export async function registerAdminRoutes(
     if (!provider) return reply.code(404).send({ error: { code: 'not_found', message: 'Provider not found.' } })
 
     const health = await accountHealthChecker(provider, account)
+    accountHealthRegistry.record(account.id, health)
     storeManager.updateAccount(account.id, {
       status: health.healthy
         ? account.status === 'inactive' ? 'inactive' : 'active'
@@ -275,7 +283,16 @@ export async function registerAdminRoutes(
         healthCode: health.code,
       },
     })
-    return reply.send(health)
+    const current = storeManager.getAccountById(account.id) ?? account
+    const cooldownUntil = routing
+      .getState()
+      .openCircuits
+      .find((entry) => entry.accountId === account.id)
+      ?.openedUntil
+    return reply.send({
+      ...health,
+      account: safeAccount(current, cooldownUntil),
+    })
   })
 
   app.post('/admin/api/accounts', { preHandler: adminAuth.requireMutation }, async (request, reply) => {
@@ -361,6 +378,7 @@ export async function registerAdminRoutes(
       outcome: 'success',
       metadata: {},
     })
+    accountHealthRegistry.delete(id.data)
     return reply.code(204).send()
   })
 
@@ -446,9 +464,9 @@ export async function registerAdminRoutes(
     const current = storeManager.getConfig()
     return reply.send({
       loadBalanceStrategy: current.loadBalanceStrategy,
-      requestTimeout: current.requestTimeout,
-      sessionTimeout: current.sessionConfig.sessionTimeout,
-      deleteAfterTimeout: current.sessionConfig.deleteAfterTimeout,
+      requestTimeout: config.requestTimeoutMs,
+      streamIdleTimeout: config.streamIdleTimeoutMs,
+      accountHealthInterval: config.accountHealthIntervalMs,
       security: {
         credentialEncryption: 'AES-256-GCM',
         apiKeyStorage: 'SHA-256',
@@ -456,6 +474,8 @@ export async function registerAdminRoutes(
         customProvidersEnabled: false,
         remoteMediaEnabled: false,
         secureCookies: config.secureCookies,
+        supportedProvider: 'deepseek-web',
+        supportedInput: 'text-only',
       },
     })
   })
@@ -468,12 +488,6 @@ export async function registerAdminRoutes(
     const current = storeManager.getConfig()
     const updated = storeManager.updateConfig({
       loadBalanceStrategy: parsed.data.loadBalanceStrategy ?? current.loadBalanceStrategy,
-      requestTimeout: parsed.data.requestTimeout ?? current.requestTimeout,
-      sessionConfig: {
-        ...current.sessionConfig,
-        sessionTimeout: parsed.data.sessionTimeout ?? current.sessionConfig.sessionTimeout,
-        deleteAfterTimeout: parsed.data.deleteAfterTimeout ?? current.sessionConfig.deleteAfterTimeout,
-      },
     })
     storeManager.addAuditLog({
       actor: 'admin',
@@ -483,9 +497,9 @@ export async function registerAdminRoutes(
     })
     return reply.send({
       loadBalanceStrategy: updated.loadBalanceStrategy,
-      requestTimeout: updated.requestTimeout,
-      sessionTimeout: updated.sessionConfig.sessionTimeout,
-      deleteAfterTimeout: updated.sessionConfig.deleteAfterTimeout,
+      requestTimeout: config.requestTimeoutMs,
+      streamIdleTimeout: config.streamIdleTimeoutMs,
+      accountHealthInterval: config.accountHealthIntervalMs,
     })
   })
 }

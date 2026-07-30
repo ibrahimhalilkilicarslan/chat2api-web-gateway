@@ -13,8 +13,7 @@ export default defineConfig({
   minify: false,
   external: ['better-sqlite3'],
   esbuildOptions(options) {
-    // Legacy provider adapters are intentionally verbose upstream. Production
-    // bundles must not retain console calls that can expose prompts or tokens.
+    // Production bundles must not retain diagnostics that can expose prompts.
     options.drop = ['console', 'debugger']
   },
   banner: {

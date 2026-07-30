@@ -1,23 +1,24 @@
-/**
- * DeepSeek Adapter
- * Implements DeepSeek web API protocol
- * 
- * NOTE: Tool prompt injection is handled by Forwarder.transformRequestForPromptToolUse()
- * This adapter only handles message format conversion and API communication
- */
-
-import axios, { AxiosResponse } from 'axios'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import axios, {
+  AxiosError,
+  type AxiosRequestConfig,
+  type AxiosResponse,
+} from 'axios'
 import { getDeepSeekHash } from '../../lib/challenge'
 import type { Account, Provider } from '../../store/types'
+import type { ChatMessage } from '../types'
 import { resolveDeepSeekChatOptions } from './providerModelOptions'
-import { getProviderToolProfile } from '../toolCalling/providerProfiles'
 
 const DEEPSEEK_API_BASE = 'https://chat.deepseek.com/api'
+const SESSION_CREATE_PATH = '/v0/chat_session/create'
+const SESSION_DELETE_PATH = '/v0/chat_session/delete'
+const CHAT_COMPLETION_PATH = '/v0/chat/completion'
+const CHALLENGE_PATH = '/v0/chat/create_pow_challenge'
 
-const FAKE_HEADERS = {
+const WEB_HEADERS = {
   Accept: '*/*',
   'Accept-Encoding': 'gzip, deflate, br, zstd',
-  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
   Origin: 'https://chat.deepseek.com',
   Referer: 'https://chat.deepseek.com/',
   'Sec-Ch-Ua': '"Not/A)Brand";v="99", "Chromium";v="148"',
@@ -30,13 +31,16 @@ const FAKE_HEADERS = {
   'X-App-Version': '2.0.0',
   'X-Client-Locale': 'zh_CN',
   'X-Client-Platform': 'web',
-  'x-Client-Timezone-Offset': '28800',
   'X-Client-Version': '2.0.0',
+}
+
+interface DeepSeekHttpClient {
+  get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>>
+  post<T = unknown>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<AxiosResponse<T>>
 }
 
 interface TokenInfo {
   accessToken: string
-  refreshToken: string
   expiresAt: number
 }
 
@@ -49,219 +53,344 @@ interface ChallengeResponse {
   signature: string
 }
 
-interface DeepSeekMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool'
-  content: string | null
-  tool_call_id?: string
-  tool_calls?: any[]
-}
-
-interface ChatCompletionRequest {
+interface ChatCompletionInput {
   model: string
-  messages: DeepSeekMessage[]
-  stream?: boolean
-  temperature?: number
+  messages: ChatMessage[]
   web_search?: boolean
   reasoning_effort?: 'low' | 'medium' | 'high'
-  tools?: any[]
-  tool_choice?: any
+}
+
+export interface DeepSeekCompletion {
+  response: AxiosResponse<NodeJS.ReadableStream>
+  sessionId: string
+}
+
+export class DeepSeekUpstreamError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'DeepSeekUpstreamError'
+  }
 }
 
 const tokenCache = new Map<string, TokenInfo>()
-const sessionCache = new Map<string, { sessionId: string; createdAt: number }>()
 
-function generateRandomString(length: number, charset: string = 'alphanumeric'): string {
-  const sets = {
-    numeric: '0123456789',
-    alphabetic: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
-    alphanumeric: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
-    hex: '0123456789abcdef',
-  }
-  const chars = sets[charset as keyof typeof sets] || sets.alphanumeric
-  let result = ''
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return result
-}
-
-function uuid(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0
-    const v = c === 'x' ? r : (r & 0x3) | 0x8
-    return v.toString(16)
-  })
-}
-
-function generateCookie(): string {
-  const timestamp = Date.now()
-  return `intercom-HWWAFSESTIME=${timestamp}; HWWAFSESID=${generateRandomString(18, 'hex')}; Hm_lvt_${uuid(false)}=${Math.floor(timestamp / 1000)},${Math.floor(timestamp / 1000)},${Math.floor(timestamp / 1000)}; Hm_lpvt_${uuid(false)}=${Math.floor(timestamp / 1000)}; _frid=${uuid(false)}; _fr_ssid=${uuid(false)}; _fr_pvid=${uuid(false)}`
+function tokenCacheKey(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
 }
 
 function unixTimestamp(): number {
   return Math.floor(Date.now() / 1000)
 }
 
+function generateCookie(): string {
+  const timestamp = Date.now()
+  const seconds = Math.floor(timestamp / 1000)
+  const session = randomBytes(9).toString('hex')
+  return [
+    `intercom-HWWAFSESTIME=${timestamp}`,
+    `HWWAFSESID=${session}`,
+    `Hm_lvt_${randomUUID()}=${seconds},${seconds},${seconds}`,
+    `Hm_lpvt_${randomUUID()}=${seconds}`,
+    `_frid=${randomUUID()}`,
+    `_fr_ssid=${randomUUID()}`,
+    `_fr_pvid=${randomUUID()}`,
+  ].join('; ')
+}
+
+function providerMessage(data: unknown, fallback: string): string {
+  if (!data || typeof data !== 'object') return fallback
+  const root = data as Record<string, unknown>
+  const nested = root.data && typeof root.data === 'object'
+    ? root.data as Record<string, unknown>
+    : undefined
+  return typeof root.msg === 'string'
+    ? root.msg
+    : typeof nested?.biz_msg === 'string'
+      ? nested.biz_msg
+      : fallback
+}
+
+function providerData(data: unknown): Record<string, unknown> | undefined {
+  if (!data || typeof data !== 'object') return undefined
+  const root = data as Record<string, unknown>
+  const nested = root.data && typeof root.data === 'object'
+    ? root.data as Record<string, unknown>
+    : undefined
+  const value = nested?.biz_data ?? root.biz_data
+  return value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function mapTransportError(error: unknown): DeepSeekUpstreamError {
+  if (axios.isCancel(error)) {
+    return new DeepSeekUpstreamError('provider_request_cancelled', 499, 'DeepSeek request was cancelled.')
+  }
+  if (error instanceof AxiosError && error.code === 'ECONNABORTED') {
+    return new DeepSeekUpstreamError('provider_timeout', 504, 'DeepSeek did not respond in time.')
+  }
+  if (error instanceof DeepSeekUpstreamError) return error
+  return new DeepSeekUpstreamError('provider_unavailable', 502, 'DeepSeek is currently unavailable.')
+}
+
 export class DeepSeekAdapter {
-  private account: Account
-  private token: string
+  private readonly token: string
+  private readonly http: DeepSeekHttpClient
+  private readonly requestTimeoutMs: number
 
-  constructor(_provider: Provider, account: Account) {
-    this.account = account
-    this.token = account.credentials.token || account.credentials.apiKey || account.credentials.refreshToken || ''
+  constructor(
+    _provider: Provider,
+    account: Account,
+    options: {
+      http?: DeepSeekHttpClient
+      requestTimeoutMs?: number
+    } = {},
+  ) {
+    this.token = account.credentials.token ?? ''
+    this.http = options.http ?? axios
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 120_000
   }
 
-  private async acquireToken(): Promise<string> {
-    if (!this.token) {
-      throw new Error('DeepSeek Token not configured, please add Token in account settings')
-    }
-
-    const cached = tokenCache.get(this.token)
-    if (cached && cached.expiresAt > unixTimestamp()) {
-      return cached.accessToken
-    }
-
-    const result = await axios.get(`${DEEPSEEK_API_BASE}/v0/users/current`, {
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        ...FAKE_HEADERS,
-      },
-      timeout: 15000,
-      validateStatus: () => true,
-    })
-
-    if (result.status === 401 || result.status === 403) {
-      throw new Error(`Token invalid or expired, please get a new Token`)
-    }
-
-    if (result.status !== 200) {
-      throw new Error(`Failed to acquire token: HTTP ${result.status}`)
-    }
-
-    // Response structure: { code: 0, data: { biz_code: 0, biz_data: { token: "..." } } }
-    const bizData = result.data?.data?.biz_data || result.data?.biz_data
-    if (!bizData?.token) {
-      const errorMsg = result.data?.msg || result.data?.data?.biz_msg || 'Unknown error'
-      throw new Error(`Failed to acquire token: ${errorMsg}`)
-    }
-
-    const accessToken = bizData.token
-    tokenCache.set(this.token, {
-      accessToken,
-      refreshToken: this.token,
-      expiresAt: unixTimestamp() + 3600,
-    })
-
-    return accessToken
+  async checkHealth(signal?: AbortSignal): Promise<void> {
+    await this.acquireToken(signal)
   }
 
-  async checkHealth(): Promise<void> {
-    await this.acquireToken()
-  }
+  async chatCompletion(
+    request: ChatCompletionInput,
+    signal?: AbortSignal,
+  ): Promise<DeepSeekCompletion> {
+    let sessionId: string | undefined
 
-  private async createSession(): Promise<string> {
-    const cacheKey = this.account.id
-    const cached = sessionCache.get(cacheKey)
-    if (cached && Date.now() - cached.createdAt < 300000) {
-      return cached.sessionId
-    }
+    try {
+      const token = await this.acquireToken(signal)
+      sessionId = await this.createSession(token, signal)
+      const challenge = await this.getChallenge(token, signal)
+      const challengeAnswer = await this.calculateChallengeAnswer(challenge)
+      const prompt = this.messagesToPrompt(request.messages)
+      const { modelType, searchEnabled, thinkingEnabled } = resolveDeepSeekChatOptions(request)
 
-    const token = await this.acquireToken()
-    const result = await axios.post(
-      `${DEEPSEEK_API_BASE}/v0/chat_session/create`,
-      {},
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...FAKE_HEADERS,
-          Cookie: generateCookie(),
+      const response = await this.http.post<NodeJS.ReadableStream>(
+        `${DEEPSEEK_API_BASE}${CHAT_COMPLETION_PATH}`,
+        {
+          chat_session_id: sessionId,
+          parent_message_id: null,
+          prompt,
+          model_type: modelType,
+          ref_file_ids: [],
+          search_enabled: searchEnabled,
+          thinking_enabled: thinkingEnabled,
+          preempt: false,
         },
-        timeout: 15000,
-        validateStatus: () => true,
-      }
-    )
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...WEB_HEADERS,
+            Referer: `https://chat.deepseek.com/a/chat/s/${sessionId}`,
+            Cookie: generateCookie(),
+            'X-Ds-Pow-Response': challengeAnswer,
+          },
+          timeout: this.requestTimeoutMs,
+          signal,
+          validateStatus: () => true,
+          responseType: 'stream',
+        },
+      )
 
-    // Response structure: { code: 0, data: { biz_code: 0, biz_data: { id: "..." } } }
-    const bizData = result.data?.data?.biz_data || result.data?.biz_data
-    if (result.status !== 200 || !bizData?.chat_session?.id) {
-      throw new Error(`Failed to create session: ${result.data?.msg || result.data?.data?.biz_msg || result.status}`)
+      return { response, sessionId }
+    } catch (error) {
+      if (sessionId) await this.deleteSession(sessionId)
+      throw mapTransportError(error)
     }
-
-    const sessionId = bizData?.chat_session?.id
-    sessionCache.set(cacheKey, { sessionId, createdAt: Date.now() })
-
-    return sessionId
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
     try {
       const token = await this.acquireToken()
-      const result = await axios.post(
-        `${DEEPSEEK_API_BASE}/v0/chat_session/delete`,
+      const result = await this.http.post(
+        `${DEEPSEEK_API_BASE}${SESSION_DELETE_PATH}`,
         { chat_session_id: sessionId },
         {
           headers: {
             Authorization: `Bearer ${token}`,
-            ...FAKE_HEADERS,
+            ...WEB_HEADERS,
           },
-          timeout: 15000,
+          timeout: 10_000,
           validateStatus: () => true,
-        }
+        },
       )
-
-      const success = result.status === 200 && result.data?.code === 0
-      if (success) {
-        // Clear cache
-        const cacheKey = this.account.id
-        sessionCache.delete(cacheKey)
-      }
-      return success
+      return result.status === 200
+        && Boolean(result.data)
+        && typeof result.data === 'object'
+        && (result.data as Record<string, unknown>).code === 0
     } catch {
       return false
     }
   }
 
-  private async getChallenge(targetPath: string): Promise<ChallengeResponse> {
-    const token = await this.acquireToken()
-    const result = await axios.post(
-      `${DEEPSEEK_API_BASE}/v0/chat/create_pow_challenge`,
-      { target_path: targetPath },
+  private async acquireToken(signal?: AbortSignal): Promise<string> {
+    if (!this.token) {
+      throw new DeepSeekUpstreamError(
+        'provider_authentication_failed',
+        401,
+        'DeepSeek web token is not configured.',
+      )
+    }
+
+    const cacheKey = tokenCacheKey(this.token)
+    const cached = tokenCache.get(cacheKey)
+    if (cached && cached.expiresAt > unixTimestamp()) return cached.accessToken
+
+    let result: AxiosResponse
+    try {
+      result = await this.http.get(`${DEEPSEEK_API_BASE}/v0/users/current`, {
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          ...WEB_HEADERS,
+        },
+        timeout: 15_000,
+        signal,
+        validateStatus: () => true,
+      })
+    } catch (error) {
+      throw mapTransportError(error)
+    }
+
+    if (result.status === 401 || result.status === 403) {
+      throw new DeepSeekUpstreamError(
+        'provider_authentication_failed',
+        result.status,
+        'DeepSeek web token is invalid or expired.',
+      )
+    }
+    if (result.status === 429) {
+      throw new DeepSeekUpstreamError(
+        'provider_rate_limited',
+        429,
+        'DeepSeek rate limit reached.',
+      )
+    }
+    if (result.status !== 200) {
+      throw new DeepSeekUpstreamError(
+        'provider_unavailable',
+        502,
+        'DeepSeek token exchange failed.',
+      )
+    }
+
+    const accessToken = providerData(result.data)?.token
+    if (typeof accessToken !== 'string' || accessToken.length === 0) {
+      throw new DeepSeekUpstreamError(
+        'provider_protocol_changed',
+        502,
+        'DeepSeek token response format changed.',
+      )
+    }
+
+    tokenCache.set(cacheKey, {
+      accessToken,
+      expiresAt: unixTimestamp() + 3600,
+    })
+    return accessToken
+  }
+
+  private async createSession(token: string, signal?: AbortSignal): Promise<string> {
+    const result = await this.http.post(
+      `${DEEPSEEK_API_BASE}${SESSION_CREATE_PATH}`,
+      {},
       {
         headers: {
           Authorization: `Bearer ${token}`,
-          ...FAKE_HEADERS,
+          ...WEB_HEADERS,
+          Cookie: generateCookie(),
         },
-        timeout: 15000,
+        timeout: 15_000,
+        signal,
         validateStatus: () => true,
-      }
+      },
     )
 
-    // Response structure: { code: 0, data: { biz_code: 0, biz_data: { challenge: {...} } } }
-    const bizData = result.data?.data?.biz_data || result.data?.biz_data
-    if (result.status !== 200 || !bizData?.challenge) {
-      throw new Error(`Failed to get challenge: ${result.data?.msg || result.data?.data?.biz_msg || result.status}`)
+    const session = providerData(result.data)?.chat_session
+    const sessionId = session && typeof session === 'object'
+      ? (session as Record<string, unknown>).id
+      : undefined
+    if (result.status !== 200 || typeof sessionId !== 'string' || sessionId.length === 0) {
+      throw new DeepSeekUpstreamError(
+        result.status === 401 || result.status === 403
+          ? 'provider_authentication_failed'
+          : 'provider_protocol_changed',
+        result.status === 401 || result.status === 403 ? result.status : 502,
+        providerMessage(result.data, 'DeepSeek session could not be created.'),
+      )
     }
+    return sessionId
+  }
 
-    return bizData.challenge
+  private async getChallenge(token: string, signal?: AbortSignal): Promise<ChallengeResponse> {
+    const result = await this.http.post(
+      `${DEEPSEEK_API_BASE}${CHALLENGE_PATH}`,
+      { target_path: '/api/v0/chat/completion' },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...WEB_HEADERS,
+        },
+        timeout: 15_000,
+        signal,
+        validateStatus: () => true,
+      },
+    )
+
+    const challenge = providerData(result.data)?.challenge
+    if (result.status !== 200 || !challenge || typeof challenge !== 'object') {
+      throw new DeepSeekUpstreamError(
+        'provider_protocol_changed',
+        502,
+        providerMessage(result.data, 'DeepSeek challenge response format changed.'),
+      )
+    }
+    return challenge as ChallengeResponse
   }
 
   private async calculateChallengeAnswer(challenge: ChallengeResponse): Promise<string> {
-    const { algorithm, challenge: challengeStr, salt, difficulty, expire_at, signature } = challenge
-    
+    const {
+      algorithm,
+      challenge: challengeValue,
+      salt,
+      difficulty,
+      expire_at: expiresAt,
+      signature,
+    } = challenge
     if (algorithm !== 'DeepSeekHashV1') {
-      throw new Error(`Unsupported algorithm: ${algorithm}`)
+      throw new DeepSeekUpstreamError(
+        'provider_protocol_changed',
+        502,
+        'DeepSeek challenge algorithm changed.',
+      )
     }
-    
+
     const deepSeekHash = await getDeepSeekHash()
-    const answer = deepSeekHash.calculateHash(algorithm, challengeStr, salt, difficulty, expire_at)
-    
+    const answer = deepSeekHash.calculateHash(
+      algorithm,
+      challengeValue,
+      salt,
+      difficulty,
+      expiresAt,
+    )
     if (answer === undefined) {
-      throw new Error('Challenge calculation failed')
+      throw new DeepSeekUpstreamError(
+        'provider_protocol_changed',
+        502,
+        'DeepSeek challenge calculation failed.',
+      )
     }
-    
+
     return Buffer.from(JSON.stringify({
       algorithm,
-      challenge: challengeStr,
+      challenge: challengeValue,
       salt,
       answer,
       signature,
@@ -269,176 +398,27 @@ export class DeepSeekAdapter {
     })).toString('base64')
   }
 
-  private messagesToPrompt(messages: DeepSeekMessage[], isMultiTurn: boolean = false): string {
-    const toolProfile = getProviderToolProfile('deepseek')
-    const processedMessages = messages.map(message => {
-      let text: string
-
-      // Handle tool calls in assistant message
-      if (message.role === 'assistant' && message.tool_calls && message.tool_calls.length > 0) {
-        text = toolProfile.formatAssistantToolCalls(message.tool_calls.map(tc => ({
-          id: tc.id,
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-        })))
-      }
-      // Handle tool response message
-      else if (message.role === 'tool' && message.tool_call_id) {
-        text = toolProfile.formatToolResult({
-          toolCallId: message.tool_call_id,
-          content: String(message.content || ''),
-        })
-      }
-      else if (Array.isArray(message.content)) {
-        const texts = message.content
-          .filter((item: any) => item.type === 'text')
-          .map((item: any) => item.text)
-        text = texts.join('\n')
-      } else {
-        text = String(message.content || '')
-      }
-      return { role: message.role, text }
-    })
-
-    if (processedMessages.length === 0) return ''
-
-    // For multi-turn mode, only send the last user message
-    if (isMultiTurn) {
-      let lastUserIdx = -1
-      for (let i = processedMessages.length - 1; i >= 0; i--) {
-        if (processedMessages[i].role === 'user') {
-          lastUserIdx = i
-          break
+  private messagesToPrompt(messages: ChatMessage[]): string {
+    return messages
+      .map((message, index) => {
+        const content = message.content
+          .replaceAll('<｜Assistant｜>', '[Assistant marker]')
+          .replaceAll('<｜User｜>', '[User marker]')
+          .replaceAll('<｜end of sentence｜>', '[End marker]')
+        if (message.role === 'assistant') {
+          return `<｜Assistant｜>${content}<｜end of sentence｜>`
         }
-      }
-      
-      if (lastUserIdx !== -1) {
-        const lastUserMsg = processedMessages[lastUserIdx]
-        let text = lastUserMsg.text
-        for (let i = lastUserIdx + 1; i < processedMessages.length; i++) {
-          if (processedMessages[i].role === 'tool') {
-            text += `\n\n${processedMessages[i].text}`
-          }
+        if (message.role === 'system') {
+          return index === 0
+            ? content
+            : `<｜User｜>System instructions:\n${content}`
         }
-        return `<｜User｜>${text}`
-      }
-    }
-
-    const mergedBlocks: { role: string; text: string }[] = []
-    let currentBlock = { ...processedMessages[0] }
-
-    for (let i = 1; i < processedMessages.length; i++) {
-      const msg = processedMessages[i]
-      if (msg.role === currentBlock.role) {
-        currentBlock.text += `\n\n${msg.text}`
-      } else {
-        mergedBlocks.push(currentBlock)
-        currentBlock = { ...msg }
-      }
-    }
-    mergedBlocks.push(currentBlock)
-
-    return mergedBlocks
-      .map((block, index) => {
-        if (block.role === 'assistant') {
-          return `<｜Assistant｜>${block.text}<｜end of sentence｜>`
-        }
-        if (block.role === 'user' || block.role === 'system') {
-          return index > 0 ? `<｜User｜>${block.text}` : block.text
-        }
-        if (block.role === 'tool') {
-          return `<｜User｜>${block.text}`
-        }
-        return block.text
+        return index === 0 ? content : `<｜User｜>${content}`
       })
       .join('')
-      .replace(/!\[.+\]\(.+\)/g, '')
-  }
-
-  async chatCompletion(request: ChatCompletionRequest): Promise<{ response: AxiosResponse; sessionId: string }> {
-    const token = await this.acquireToken()
-    
-    const sessionId = await this.createSession()
-    
-    const challenge = await this.getChallenge('/api/v0/chat/completion')
-    const challengeAnswer = await this.calculateChallengeAnswer(challenge)
-
-    // Clone messages to avoid modifying original request
-    // Note: Tool prompt injection is already handled by Forwarder.transformRequestForPromptToolUse()
-    const messages = [...request.messages]
-
-    let prompt = this.messagesToPrompt(messages, false)
-
-    const { modelType, searchEnabled, thinkingEnabled } = resolveDeepSeekChatOptions(request, prompt)
-
-    const response = await axios.post(
-      `${DEEPSEEK_API_BASE}/v0/chat/completion`,
-      {
-        chat_session_id: sessionId,
-        parent_message_id: null,
-        prompt,
-        model_type: modelType,
-        ref_file_ids: [],
-        search_enabled: searchEnabled,
-        thinking_enabled: thinkingEnabled,
-        preempt: false,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...FAKE_HEADERS,
-          Referer: `https://chat.deepseek.com/a/chat/s/${sessionId}`,
-          Cookie: generateCookie(),
-          'X-Ds-Pow-Response': challengeAnswer,
-        },
-        timeout: 120000,
-        validateStatus: () => true,
-        responseType: 'stream',
-      }
-    )
-
-    return { response, sessionId }
-  }
-
-  async deleteAllChats(): Promise<boolean> {
-    try {
-      const token = await this.acquireToken()
-      const result = await axios.post(
-        `${DEEPSEEK_API_BASE}/v0/chat_session/delete_all`,
-        {},
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            ...FAKE_HEADERS,
-          },
-          timeout: 30000,
-          validateStatus: () => true,
-        }
-      )
-
-      const success = result.status === 200 && result.data?.code === 0
-      if (success) {
-        sessionCache.clear()
-      }
-      return success
-    } catch {
-      return false
-    }
   }
 
   static isDeepSeekProvider(provider: Provider): boolean {
     return provider.id === 'deepseek'
   }
-
-  /**
-   * Clear session cache for a specific account
-   * This should be called when a session is deleted externally (e.g., from web)
-   */
-  static clearSessionCache(accountId: string): void {
-    sessionCache.delete(accountId)
-  }
-}
-
-export const deepSeekAdapter = {
-  DeepSeekAdapter,
 }

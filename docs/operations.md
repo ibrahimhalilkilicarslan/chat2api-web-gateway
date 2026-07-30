@@ -21,6 +21,13 @@ DeepSeek may report throttling as an SSE error inside an HTTP `200` provider
 response. The gateway converts that condition to HTTP `429` for non-stream
 requests and emits a `provider_rate_limited` SSE error event for streaming
 requests. An empty successful completion must not be treated as provider health.
+Unsupported fields such as `tools`, `response_format`, media parts, or sampling
+controls must return `400 unsupported_feature`; legacy completion routes return
+`404`.
+
+Request, first-byte, stream-idle, and account-health timeouts are deployment
+environment settings. The admin UI reports them but does not create a second
+runtime configuration source.
 
 ## Backup
 
@@ -42,6 +49,19 @@ restricted off-volume storage.
 The runtime image includes the root-owned script at
 `/app/scripts/backup-sqlite.mjs`; invoke it with `node` when running from a
 container console where pnpm is unavailable.
+
+Verify any copied or archived backup again without opening it for writes:
+
+```bash
+CHAT2API_BACKUP_PATH=/secure/off-volume/chat2api-YYYYMMDD.sqlite \
+pnpm backup:verify
+```
+
+For a restore drill, copy a verified backup and the separately protected master
+key into an isolated non-production environment, start exactly one replica, and
+confirm readiness, admin login, account-list redaction, and authenticated
+`/v1/models`. Do not run provider generation unless the drill uses a dedicated
+test account. Record the backup timestamp and drill result without credentials.
 
 Back up the master encryption key separately from the database. Test restoration
 periodically in an isolated environment.
@@ -133,7 +153,7 @@ wrong key keeps readiness down instead of silently serving a broken gateway.
 
 ## Incident response
 
-1. Disable the affected API key or provider account.
+1. Disable the affected API key or DeepSeek account.
 2. Preserve metadata and infrastructure logs without copying prompt content.
 3. Rotate exposed provider/API/admin/session credentials.
 4. Inspect request and audit metadata for time, model, provider, account, and result.

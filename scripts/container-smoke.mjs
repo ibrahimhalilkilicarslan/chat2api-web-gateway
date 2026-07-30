@@ -144,14 +144,17 @@ async function run() {
       },
       body: JSON.stringify({
         model: 'deepseek-chat',
-        messages: [{
-          role: 'user',
-          content: [{
-            type: 'image_url',
-            image_url: { url: 'https://example.invalid/private-image.png' },
-          }],
-        }],
+        messages: [{ role: 'user', content: 'contract check' }],
+        tools: [],
       }),
+    })
+    await expectStatus(`${baseUrl}/v1/completions`, 404, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${bootstrapApiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'deepseek-chat', prompt: 'legacy request' }),
     })
 
     await expectStatus(`${baseUrl}/admin/`, 200)
@@ -304,7 +307,7 @@ async function run() {
       image,
       health: 'pass',
       apiAuthentication: 'pass',
-      remoteMediaRejection: 'pass',
+      unsupportedFeatureRejection: 'pass',
       adminSessionAndCsrf: 'pass',
       nonRoot: 'pass',
       readOnlyRootFilesystem: 'pass',

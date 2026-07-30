@@ -37,6 +37,8 @@ const config: RuntimeConfig = {
   dailyQuota: 100,
   requestTimeoutMs: 10_000,
   firstByteTimeoutMs: 1_000,
+  streamIdleTimeoutMs: 1_000,
+  accountHealthIntervalMs: 0,
 }
 
 function cookieHeader(setCookie: string | string[] | undefined): string {
@@ -84,6 +86,33 @@ describe('gateway HTTP security contract', () => {
     expect(valid.statusCode).toBe(200)
   })
 
+  it('exposes only the documented text-chat compatibility surface', async () => {
+    const legacy = await app.inject({
+      method: 'POST',
+      url: '/v1/completions',
+      headers: { authorization: `Bearer ${bootstrapApiKey}` },
+      payload: { model: 'deepseek-v4-flash', prompt: 'legacy' },
+    })
+    const unsupported = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${bootstrapApiKey}` },
+      payload: {
+        model: 'deepseek-v4-flash',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+      },
+    })
+
+    expect(legacy.statusCode).toBe(404)
+    expect(unsupported.statusCode).toBe(400)
+    expect(unsupported.json()).toMatchObject({
+      error: {
+        code: 'unsupported_feature',
+      },
+    })
+  })
+
   it('requires an exact admin origin and issues a signed session', async () => {
     const rejected = await app.inject({
       method: 'POST',
@@ -109,22 +138,51 @@ describe('gateway HTTP security contract', () => {
     expect(csrfToken.length).toBeGreaterThan(20)
   })
 
+  it('keeps deployment timeouts read-only and rejects ineffective settings', async () => {
+    const settings = await app.inject({
+      method: 'GET',
+      url: '/admin/api/settings',
+      headers: { cookie: cookies },
+    })
+    expect(settings.statusCode).toBe(200)
+    expect(settings.json()).toMatchObject({
+      requestTimeout: config.requestTimeoutMs,
+      streamIdleTimeout: config.streamIdleTimeoutMs,
+    })
+
+    const rejected = await app.inject({
+      method: 'PATCH',
+      url: '/admin/api/settings',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: { requestTimeout: 42_000 },
+    })
+    expect(rejected.statusCode).toBe(400)
+
+    const accepted = await app.inject({
+      method: 'PATCH',
+      url: '/admin/api/settings',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: { loadBalanceStrategy: 'least-used' },
+    })
+    expect(accepted.statusCode).toBe(200)
+    expect(accepted.json()).toMatchObject({
+      loadBalanceStrategy: 'least-used',
+      requestTimeout: config.requestTimeoutMs,
+    })
+  })
+
   it('enforces CSRF and never returns provider credentials', async () => {
     const missingCsrf = await app.inject({
-      method: 'PATCH',
-      url: '/admin/api/providers/deepseek',
+      method: 'POST',
+      url: '/admin/api/accounts',
       headers: { origin, cookie: cookies },
-      payload: { enabled: true },
+      payload: {
+        providerId: 'deepseek',
+        name: 'Rejected account',
+        credentials: { token: 'not-stored-without-csrf' },
+      },
     })
     expect(missingCsrf.statusCode).toBe(403)
-
-    const enabled = await app.inject({
-      method: 'PATCH',
-      url: '/admin/api/providers/deepseek',
-      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
-      payload: { enabled: true },
-    })
-    expect(enabled.statusCode).toBe(200)
 
     const created = await app.inject({
       method: 'POST',
@@ -201,9 +259,9 @@ describe('gateway HTTP security contract', () => {
       url: '/admin/api/accounts',
       headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
       payload: {
-        providerId: 'deepseek-api',
-        name: 'Official API health account',
-        credentials: { apiKey: 'official-provider-key-that-must-remain-private' },
+        providerId: 'deepseek',
+        name: 'DeepSeek web health account',
+        credentials: { token: 'web-provider-token-that-must-remain-private' },
       },
     })
     const account = created.json<{ id: string }>()
@@ -220,18 +278,18 @@ describe('gateway HTTP security contract', () => {
       healthy: true,
       code: 'provider_healthy',
     })
-    expect(serialized).not.toContain('official-provider-key-that-must-remain-private')
+    expect(serialized).not.toContain('web-provider-token-that-must-remain-private')
     const auditLogs = storeManager.listAuditLogs(20)
     expect(auditLogs).toEqual(expect.arrayContaining([
       expect.objectContaining({
         action: 'account.health_check',
         outcome: 'success',
         metadata: {
-          providerId: 'deepseek-api',
+          providerId: 'deepseek',
           healthCode: 'provider_healthy',
         },
       }),
     ]))
-    expect(JSON.stringify(auditLogs)).not.toContain('official-provider-key-that-must-remain-private')
+    expect(JSON.stringify(auditLogs)).not.toContain('web-provider-token-that-must-remain-private')
   })
 })

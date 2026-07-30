@@ -109,7 +109,10 @@ export class DeepSeekHash {
   public async init(wasmPath: string): Promise<any> {
     const imports = { wbg: {} }
     const wasmBuffer = await fs.promises.readFile(wasmPath)
-    const { instance } = await WebAssembly.instantiate(wasmBuffer, imports)
+    const wasmBytes = new Uint8Array(wasmBuffer.length)
+    wasmBytes.set(wasmBuffer)
+    const module = await WebAssembly.compile(wasmBytes)
+    const instance = await WebAssembly.instantiate(module, imports)
     this.wasmInstance = instance.exports
     return this.wasmInstance
   }

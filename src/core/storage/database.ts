@@ -78,18 +78,6 @@ export class GatewayDatabase {
             updated_at INTEGER NOT NULL
           );
 
-          CREATE TABLE sessions (
-            id TEXT PRIMARY KEY,
-            provider_id TEXT NOT NULL,
-            account_id TEXT NOT NULL,
-            data_json TEXT NOT NULL,
-            status TEXT NOT NULL,
-            last_active_at INTEGER NOT NULL,
-            created_at INTEGER NOT NULL
-          );
-          CREATE INDEX idx_sessions_account ON sessions(account_id);
-          CREATE INDEX idx_sessions_provider ON sessions(provider_id);
-
           CREATE TABLE api_keys (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,

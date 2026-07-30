@@ -6,26 +6,13 @@ import { GatewayDatabase } from '../../core/storage/database.js'
 import {
   type Account,
   type AppConfig,
-  type ChatMessage,
-  type CustomModel,
   type DailyStatistics,
   type EffectiveModel,
-  type LogEntry,
-  type LogLevel,
   type PersistentStatistics,
   type Provider,
-  type ProviderModelOverrides,
-  type RequestLogEntry,
-  type SessionConfig,
-  type SessionRecord,
-  type UserModelOverrides,
   BUILTIN_PROVIDERS,
   DEFAULT_CONFIG,
-  DEFAULT_SESSION_CONFIG,
   DEFAULT_STATISTICS,
-  DEFAULT_USER_MODEL_OVERRIDES,
-  normalizeModelMappingsWithDefaults,
-  sanitizeDeepSeekModelOverrides,
 } from './types.js'
 
 export interface StoreInitializationOptions {
@@ -134,10 +121,6 @@ type ApiKeyRow = {
   last_used_at: number | null
 }
 
-type SessionRow = {
-  data_json: string
-}
-
 type SettingRow = {
   value_json: string
 }
@@ -213,12 +196,13 @@ export class StoreManager {
 
   getProviders(): Provider[] {
     const rows = this.requireConnection()
-      .prepare('SELECT * FROM providers ORDER BY id')
+      .prepare("SELECT * FROM providers WHERE id = 'deepseek' ORDER BY id")
       .all() as ProviderRow[]
     return rows.map((row) => this.providerFromRow(row))
   }
 
   getProviderById(id: string): Provider | undefined {
+    if (!BUILTIN_PROVIDERS.some((provider) => provider.id === id)) return undefined
     const row = this.requireConnection()
       .prepare('SELECT * FROM providers WHERE id = ?')
       .get(id) as ProviderRow | undefined
@@ -248,15 +232,8 @@ export class StoreManager {
     const next: Provider = {
       ...current,
       name: typeof updates.name === 'string' ? updates.name : current.name,
-      enabled: typeof updates.enabled === 'boolean' ? updates.enabled : current.enabled,
-      apiEndpoint: builtIn.apiEndpoint,
-      chatPath: builtIn.chatPath,
-      headers: builtIn.headers,
+      enabled: true,
       supportedModels: builtIn.supportedModels,
-      modelMappings: builtIn.modelMappings,
-      routingPriority: builtIn.routingPriority,
-      integrationMode: builtIn.integrationMode,
-      capabilities: builtIn.capabilities,
       updatedAt: Date.now(),
     }
     this.requireConnection()
@@ -272,7 +249,7 @@ export class StoreManager {
   getAccounts(includeCredentials = false): Account[] {
     this.resetDailyAccountUsage()
     const rows = this.requireConnection()
-      .prepare('SELECT * FROM accounts ORDER BY created_at DESC')
+      .prepare("SELECT * FROM accounts WHERE provider_id = 'deepseek' ORDER BY created_at DESC")
       .all() as AccountRow[]
     return rows.map((row) => this.accountFromRow(row, includeCredentials))
   }
@@ -282,10 +259,12 @@ export class StoreManager {
     const row = this.requireConnection()
       .prepare('SELECT * FROM accounts WHERE id = ?')
       .get(id) as AccountRow | undefined
+    if (row?.provider_id !== 'deepseek') return undefined
     return row ? this.accountFromRow(row, includeCredentials) : undefined
   }
 
   getAccountsByProviderId(providerId: string, includeCredentials = false): Account[] {
+    if (providerId !== 'deepseek') return []
     this.resetDailyAccountUsage()
     const rows = this.requireConnection()
       .prepare('SELECT * FROM accounts WHERE provider_id = ? ORDER BY created_at')
@@ -366,7 +345,7 @@ export class StoreManager {
 
   deleteAccount(id: string): boolean {
     const result = this.requireConnection()
-      .prepare('DELETE FROM accounts WHERE id = ?')
+      .prepare("DELETE FROM accounts WHERE id = ? AND provider_id = 'deepseek'")
       .run(id)
     return result.changes > 0
   }
@@ -385,13 +364,6 @@ export class StoreManager {
     const next = this.normalizeConfig({
       ...current,
       ...updates,
-      apiKeys: [],
-      enableApiKey: true,
-      retryCount: 0,
-      managementApi: {
-        enableManagementApi: false,
-        managementApiSecret: '',
-      },
     })
     this.setSetting('app_config', next)
     return next
@@ -403,157 +375,14 @@ export class StoreManager {
     return config
   }
 
-  getSessionConfig(): SessionConfig {
-    return this.getConfig().sessionConfig ?? DEFAULT_SESSION_CONFIG
-  }
-
-  updateSessionConfig(updates: Partial<SessionConfig>): SessionConfig {
-    const sessionConfig = { ...this.getSessionConfig(), ...updates }
-    this.updateConfig({ sessionConfig })
-    return sessionConfig
-  }
-
-  getSessions(): SessionRecord[] {
-    const rows = this.requireConnection()
-      .prepare('SELECT data_json FROM sessions ORDER BY last_active_at DESC')
-      .all() as SessionRow[]
-    return rows.map((row) => JSON.parse(row.data_json) as SessionRecord)
-  }
-
-  getSessionById(id: string): SessionRecord | undefined {
-    const row = this.requireConnection()
-      .prepare('SELECT data_json FROM sessions WHERE id = ?')
-      .get(id) as SessionRow | undefined
-    return row ? JSON.parse(row.data_json) as SessionRecord : undefined
-  }
-
-  getActiveSessions(): SessionRecord[] {
-    return this.getSessions().filter((session) => session.status === 'active')
-  }
-
-  addSession(session: SessionRecord): void {
-    this.requireConnection().prepare(`
-      INSERT INTO sessions(id, provider_id, account_id, data_json, status, last_active_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      session.id,
-      session.providerId,
-      session.accountId,
-      JSON.stringify(session),
-      session.status,
-      session.lastActiveAt,
-      session.createdAt,
-    )
-  }
-
-  updateSession(id: string, updates: Partial<SessionRecord>): SessionRecord | null {
-    const current = this.getSessionById(id)
-    if (!current) return null
-    const next = { ...current, ...updates, id: current.id }
-    this.requireConnection().prepare(`
-      UPDATE sessions SET data_json = ?, status = ?, last_active_at = ? WHERE id = ?
-    `).run(JSON.stringify(next), next.status, next.lastActiveAt, id)
-    return next
-  }
-
-  addMessageToSession(sessionId: string, message: ChatMessage): SessionRecord | null {
-    const current = this.getSessionById(sessionId)
-    if (!current) return null
-    const messages = [...current.messages, message].slice(-this.getSessionConfig().maxMessagesPerSession)
-    return this.updateSession(sessionId, {
-      messages,
-      lastActiveAt: Date.now(),
-    })
-  }
-
-  deleteSession(id: string): boolean {
-    return this.requireConnection().prepare('DELETE FROM sessions WHERE id = ?').run(id).changes > 0
-  }
-
-  cleanExpiredSessions(): number {
-    const config = this.getSessionConfig()
-    const cutoff = Date.now() - config.sessionTimeout * 60_000
-    const result = this.requireConnection()
-      .prepare('DELETE FROM sessions WHERE last_active_at < ?')
-      .run(cutoff)
-    return result.changes
-  }
-
-  getSessionsByAccountId(accountId: string): SessionRecord[] {
-    return this.getSessions().filter((session) => session.accountId === accountId)
-  }
-
-  getSessionsByProviderId(providerId: string): SessionRecord[] {
-    return this.getSessions().filter((session) => session.providerId === providerId)
-  }
-
-  clearAllSessions(): void {
-    this.requireConnection().prepare('DELETE FROM sessions').run()
-  }
-
-  getModelOverrides(providerId: string): ProviderModelOverrides | undefined {
-    const overrides = this.getSetting<UserModelOverrides>('model_overrides') ?? DEFAULT_USER_MODEL_OVERRIDES
-    return overrides[providerId]
-  }
-
-  hasModelOverrides(providerId: string): boolean {
-    const overrides = this.getModelOverrides(providerId)
-    return Boolean(overrides?.addedModels.length || overrides?.excludedModels.length)
-  }
-
   getEffectiveModels(providerId: string): EffectiveModel[] {
     const provider = this.getProviderById(providerId)
     if (!provider) return []
-    const overrides = providerId === 'deepseek'
-      ? sanitizeDeepSeekModelOverrides(this.getModelOverrides(providerId))
-      : this.getModelOverrides(providerId) ?? { addedModels: [], excludedModels: [] }
-    const excluded = new Set(overrides.excludedModels.map((model) => model.toLowerCase()))
-    const defaults = (provider.supportedModels ?? [])
-      .filter((model) => !excluded.has(model.toLowerCase()))
+    return (provider.supportedModels ?? [])
       .map((model) => ({
         displayName: model,
-        actualModelId: provider.modelMappings?.[model] ?? model,
-        isCustom: false,
+        actualModelId: model,
       }))
-    return [
-      ...defaults,
-      ...overrides.addedModels.map((model) => ({ ...model, isCustom: true })),
-    ]
-  }
-
-  addCustomModel(providerId: string, model: CustomModel): EffectiveModel[] {
-    const all = this.getSetting<UserModelOverrides>('model_overrides') ?? {}
-    const current = all[providerId] ?? { addedModels: [], excludedModels: [] }
-    const next = {
-      ...all,
-      [providerId]: {
-        ...current,
-        addedModels: [...current.addedModels.filter((entry) => entry.displayName !== model.displayName), model],
-      },
-    }
-    this.setSetting('model_overrides', next)
-    return this.getEffectiveModels(providerId)
-  }
-
-  removeModel(providerId: string, modelName: string): EffectiveModel[] {
-    const all = this.getSetting<UserModelOverrides>('model_overrides') ?? {}
-    const current = all[providerId] ?? { addedModels: [], excludedModels: [] }
-    const defaultModel = this.getProviderById(providerId)?.supportedModels?.includes(modelName)
-    all[providerId] = {
-      addedModels: current.addedModels.filter((entry) => entry.displayName !== modelName),
-      excludedModels: defaultModel
-        ? [...new Set([...current.excludedModels, modelName])]
-        : current.excludedModels,
-    }
-    this.setSetting('model_overrides', all)
-    return this.getEffectiveModels(providerId)
-  }
-
-  resetModels(providerId: string): EffectiveModel[] {
-    const all = this.getSetting<UserModelOverrides>('model_overrides') ?? {}
-    delete all[providerId]
-    this.setSetting('model_overrides', all)
-    return this.getEffectiveModels(providerId)
   }
 
   seedBootstrapApiKey(rawKey: string, requestsPerMinute: number, dailyQuota: number): void {
@@ -703,7 +532,7 @@ export class StoreManager {
       entry.isStream ? 1 : 0,
       null,
     )
-    const maxEntries = this.getConfig().requestLogConfig.maxEntries
+    const maxEntries = this.getConfig().requestLogMaxEntries
     this.requireConnection().prepare(`
       DELETE FROM request_logs
       WHERE id IN (
@@ -745,71 +574,6 @@ export class StoreManager {
       .prepare('SELECT * FROM request_logs ORDER BY timestamp DESC, rowid DESC LIMIT ?')
       .all(safeLimit) as RequestLogRow[]
     return rows.map((row) => this.requestLogFromRow(row))
-  }
-
-  addRequestLog(entry: Omit<RequestLogEntry, 'id'>): RequestLogEntry {
-    const requestId = randomUUID()
-    const safe = this.startRequestLog({
-      requestId,
-      method: entry.method,
-      url: entry.url,
-      model: entry.model,
-      actualModel: entry.actualModel,
-      providerId: entry.providerId,
-      accountId: entry.accountId,
-      isStream: entry.isStream,
-    })
-    this.finishRequestLog(safe.id, {
-      status: entry.status,
-      statusCode: entry.statusCode,
-      latency: entry.latency,
-      actualModel: entry.actualModel,
-      providerId: entry.providerId,
-      accountId: entry.accountId,
-      errorCode: entry.status === 'error' ? 'provider_error' : undefined,
-    })
-    return {
-      ...entry,
-      id: safe.id,
-      requestBody: undefined,
-      responseBody: undefined,
-      userInput: undefined,
-      errorStack: undefined,
-      errorMessage: entry.errorMessage ? redactText(entry.errorMessage) : undefined,
-    }
-  }
-
-  updateRequestLog(id: string, updates: Partial<RequestLogEntry>): boolean {
-    const current = this.listRequestLogs(500).find((entry) => entry.id === id)
-    if (!current) return false
-    return this.finishRequestLog(id, {
-      status: updates.status ?? (current.status === 'pending' ? 'success' : current.status),
-      statusCode: updates.statusCode ?? current.statusCode,
-      latency: updates.latency ?? current.latency,
-      actualModel: updates.actualModel ?? current.actualModel,
-      providerId: updates.providerId ?? current.providerId,
-      accountId: updates.accountId ?? current.accountId,
-      errorCode: updates.status === 'error' ? 'provider_error' : current.errorCode,
-    })
-  }
-
-  getRequestLogs(limit = 100): RequestLogEntry[] {
-    return this.listRequestLogs(limit).map((entry) => ({
-      id: entry.id,
-      timestamp: entry.timestamp,
-      status: entry.status === 'pending' ? 'error' : entry.status,
-      statusCode: entry.statusCode,
-      method: entry.method,
-      url: entry.url,
-      model: entry.model,
-      actualModel: entry.actualModel,
-      providerId: entry.providerId,
-      accountId: entry.accountId,
-      responseStatus: entry.statusCode,
-      latency: entry.latency,
-      isStream: entry.isStream,
-      errorMessage: entry.errorCode,
-    }))
   }
 
   addAuditLog(input: Omit<AuditLog, 'id' | 'timestamp'>): AuditLog {
@@ -869,31 +633,6 @@ export class StoreManager {
     }))
   }
 
-  addLog(
-    level: LogLevel,
-    message: string,
-    data?: Record<string, unknown>,
-  ): LogEntry {
-    const entry: LogEntry = {
-      id: randomUUID(),
-      timestamp: Date.now(),
-      level,
-      message: redactText(message).slice(0, 500),
-      requestId: typeof data?.requestId === 'string' ? data.requestId : undefined,
-      accountId: typeof data?.accountId === 'string' ? data.accountId : undefined,
-      providerId: typeof data?.providerId === 'string' ? data.providerId : undefined,
-    }
-    this.addAuditLog({
-      actor: 'gateway',
-      action: `legacy_log.${level}`,
-      targetType: entry.providerId ? 'provider' : undefined,
-      targetId: entry.providerId,
-      outcome: level === 'error' ? 'failure' : 'success',
-      metadata: entry.requestId ? { requestId: entry.requestId } : {},
-    })
-    return entry
-  }
-
   getStatistics(): PersistentStatistics {
     const rows = this.listRequestLogs(500)
     const successful = rows.filter((entry) => entry.status === 'success')
@@ -932,22 +671,6 @@ export class StoreManager {
       totalLatency: rows.reduce((sum, entry) => sum + entry.latency, 0),
       modelUsage: {},
       providerUsage: {},
-    }
-  }
-
-  recordRequestInStats(
-    _success: boolean,
-    _latency: number,
-    _model: string,
-    _providerId?: string,
-    _accountId?: string,
-  ): void {
-    // Request metadata is persisted through startRequestLog/finishRequestLog.
-  }
-
-  getStore(): { set: (key: string, value: unknown) => void } {
-    return {
-      set: (key, value) => this.setSetting(key, value),
     }
   }
 
@@ -996,19 +719,12 @@ export class StoreManager {
       name: existing?.name ?? builtIn.name,
       type: 'builtin',
       authType: builtIn.authType,
-      apiEndpoint: builtIn.apiEndpoint,
-      chatPath: builtIn.chatPath,
-      headers: builtIn.headers,
-      enabled: existing?.enabled ?? false,
+      enabled: true,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       description: builtIn.description,
       icon: builtIn.icon,
       supportedModels: builtIn.supportedModels,
-      modelMappings: builtIn.modelMappings,
-      routingPriority: builtIn.routingPriority,
-      integrationMode: builtIn.integrationMode,
-      capabilities: builtIn.capabilities,
     }
   }
 
@@ -1050,34 +766,33 @@ export class StoreManager {
   }
 
   private normalizeConfig(input: Partial<AppConfig>): AppConfig {
+    const legacyInput = input as Record<string, unknown>
+    const legacyRequestLogConfig = legacyInput.requestLogConfig
+      && typeof legacyInput.requestLogConfig === 'object'
+      ? legacyInput.requestLogConfig as Record<string, unknown>
+      : undefined
+    const rawStrategy = legacyInput.loadBalanceStrategy
+    const rawRequestLogMaxEntries = legacyInput.requestLogMaxEntries
+      ?? legacyRequestLogConfig?.maxEntries
+    const loadBalanceStrategy: AppConfig['loadBalanceStrategy'] = rawStrategy === 'fill-first'
+      ? 'least-used'
+      : rawStrategy === 'round-robin' || rawStrategy === 'least-used' || rawStrategy === 'failover'
+        ? rawStrategy
+        : DEFAULT_CONFIG.loadBalanceStrategy
     return {
-      ...DEFAULT_CONFIG,
-      ...input,
-      proxyHost: '0.0.0.0',
-      retryCount: 0,
-      enableApiKey: true,
-      apiKeys: [],
-      modelMappings: normalizeModelMappingsWithDefaults(input.modelMappings),
-      requestLogConfig: {
-        ...DEFAULT_CONFIG.requestLogConfig,
-        ...input.requestLogConfig,
-        enabled: true,
-        includeBodies: false,
-        redactSensitiveData: true,
-      },
-      managementApi: {
-        enableManagementApi: false,
-        managementApiSecret: '',
-      },
+      loadBalanceStrategy,
+      requestLogMaxEntries: typeof rawRequestLogMaxEntries === 'number'
+        && Number.isInteger(rawRequestLogMaxEntries)
+        && rawRequestLogMaxEntries >= 10
+        && rawRequestLogMaxEntries <= 10_000
+        ? rawRequestLogMaxEntries
+        : DEFAULT_CONFIG.requestLogMaxEntries,
     }
   }
 
   private ensureDefaultConfig(): void {
     if (!this.getSetting('app_config')) {
       this.setSetting('app_config', this.normalizeConfig(DEFAULT_CONFIG))
-    }
-    if (!this.getSetting('model_overrides')) {
-      this.setSetting('model_overrides', DEFAULT_USER_MODEL_OVERRIDES)
     }
   }
 

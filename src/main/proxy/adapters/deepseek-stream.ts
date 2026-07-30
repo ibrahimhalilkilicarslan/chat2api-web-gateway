@@ -1,29 +1,28 @@
-/**
- * DeepSeek Stream Response Handler
- * Converts DeepSeek SSE stream to OpenAI compatible format
- */
+import { randomUUID } from 'node:crypto'
+import { PassThrough, type Readable } from 'node:stream'
 
-import { PassThrough } from 'stream'
-import { parseToolCallsFromText } from '../utils/toolParser.ts'
-import { ToolStreamParser } from '../toolCalling/ToolStreamParser.ts'
-import type { ToolCallingPlan } from '../toolCalling/types.ts'
-
-const MODEL_NAME = 'deepseek-chat'
-const SEARCH_CONTROL_MARKER_PATTERN = /^(SEARCH|WEB_SEARCH|SEARCHING)(?:\s+|$)/i
-
-function stripSearchControlMarker(content: string, enabled: boolean): string {
-  return enabled ? content.replace(SEARCH_CONTROL_MARKER_PATTERN, '') : content
-}
+type OutputPath = 'thinking' | 'content'
 
 interface StreamChunk {
   p?: string
-  v?: any
-  response_message_id?: string
+  v?: unknown
   o?: string
   type?: string
-  content?: string
   finish_reason?: string
 }
+
+interface SearchResult {
+  url: string
+  title: string
+  citeIndex?: number
+}
+
+interface ContentDelta {
+  path: OutputPath
+  content: string
+}
+
+const SEARCH_CONTROL_MARKER_PATTERN = /^(SEARCH|WEB_SEARCH|SEARCHING)(?:\s+|$)/i
 
 export class DeepSeekProviderError extends Error {
   constructor(
@@ -38,7 +37,6 @@ export class DeepSeekProviderError extends Error {
 
 function providerErrorFromChunk(chunk: StreamChunk): DeepSeekProviderError | undefined {
   if (chunk.type !== 'error') return undefined
-
   if (chunk.finish_reason === 'rate_limit_reached') {
     return new DeepSeekProviderError(
       'provider_rate_limited',
@@ -46,7 +44,6 @@ function providerErrorFromChunk(chunk: StreamChunk): DeepSeekProviderError | und
       'DeepSeek rate limit reached. Retry later.',
     )
   }
-
   return new DeepSeekProviderError(
     'provider_response_error',
     502,
@@ -54,448 +51,365 @@ function providerErrorFromChunk(chunk: StreamChunk): DeepSeekProviderError | und
   )
 }
 
-function createBaseChunk(id: string, model: string, created: number) {
-  return {
-    id,
-    model,
-    object: 'chat.completion.chunk',
-    created
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function safeString(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function responseId(): string {
+  return `chatcmpl_${randomUUID().replaceAll('-', '')}`
+}
+
+class DeepSeekEventDecoder {
+  private currentPath: OutputPath
+  private readonly searchResults = new Map<string, SearchResult>()
+
+  constructor(
+    private readonly thinkingEnabled: boolean,
+    private readonly webSearchEnabled: boolean,
+  ) {
+    this.currentPath = thinkingEnabled ? 'thinking' : 'content'
+  }
+
+  process(chunk: StreamChunk): ContentDelta[] {
+    const output: ContentDelta[] = []
+    const value = chunk.v
+    const valueRecord = record(value)
+    const response = record(valueRecord?.response)
+
+    if (response) {
+      if (typeof response.thinking_enabled === 'boolean') {
+        this.currentPath = response.thinking_enabled ? 'thinking' : 'content'
+      }
+      this.processFragments(response.fragments, output)
+    } else if (chunk.p === 'response/fragments') {
+      this.processFragments(value, output)
+    } else if (chunk.p === 'response' && Array.isArray(value)) {
+      for (const operation of value) {
+        const operationRecord = record(operation)
+        if (!operationRecord) continue
+        if (operationRecord.p === 'response') {
+          const nestedResponse = record(operationRecord.v)
+          if (typeof nestedResponse?.thinking_enabled === 'boolean') {
+            this.currentPath = nestedResponse.thinking_enabled ? 'thinking' : 'content'
+          }
+        }
+        if (Array.isArray(operationRecord.v)) {
+          const content = operationRecord.v
+            .map((entry) => safeString(record(entry)?.content))
+            .join('')
+          this.pushContent(output, content)
+        }
+      }
+    }
+
+    if (
+      (chunk.p === 'response/search_results'
+        || /^response\/fragments\/-?\d+\/results$/.test(chunk.p ?? ''))
+      && Array.isArray(value)
+    ) {
+      if (chunk.o === 'BATCH') this.applySearchBatch(value)
+      else this.mergeSearchResults(value)
+      return output
+    }
+
+    if (typeof value === 'string') this.pushContent(output, value)
+    return output
+  }
+
+  citations(): string {
+    return [...this.searchResults.values()]
+      .filter((entry) => Number.isFinite(entry.citeIndex))
+      .sort((left, right) => (left.citeIndex ?? 0) - (right.citeIndex ?? 0))
+      .map((entry) => `[${entry.citeIndex}]: [${entry.title}](${entry.url})`)
+      .join('\n')
+  }
+
+  private processFragments(value: unknown, output: ContentDelta[]): void {
+    if (!Array.isArray(value)) return
+    for (const fragment of value) {
+      const fragmentRecord = record(fragment)
+      if (!fragmentRecord) continue
+      if (Array.isArray(fragmentRecord.results)) {
+        this.mergeSearchResults(fragmentRecord.results)
+      }
+      const content = safeString(fragmentRecord.content)
+      if (!content) continue
+      if (fragmentRecord.type === 'THINK') this.currentPath = 'thinking'
+      if (fragmentRecord.type === 'ANSWER' || fragmentRecord.type === 'RESPONSE') {
+        this.currentPath = 'content'
+      }
+      this.pushContent(output, content)
+    }
+  }
+
+  private pushContent(output: ContentDelta[], value: string): void {
+    const withoutFinishMarker = value.replace(/FINISHED/g, '')
+    const withoutSearchMarker = this.webSearchEnabled
+      ? withoutFinishMarker.replace(SEARCH_CONTROL_MARKER_PATTERN, '')
+      : withoutFinishMarker
+    const content = withoutSearchMarker.replace(/\[citation:(\d+)\]/g, '[$1]')
+    if (content) output.push({ path: this.currentPath, content })
+  }
+
+  private mergeSearchResults(values: unknown[]): void {
+    for (const value of values) {
+      const item = record(value)
+      const rawUrl = safeString(item?.url)
+      const rawTitle = safeString(item?.title)
+      if (!rawUrl || !rawTitle) continue
+
+      let url: URL
+      try {
+        url = new URL(rawUrl)
+      } catch {
+        continue
+      }
+      if (
+        !['http:', 'https:'].includes(url.protocol)
+        || url.username
+        || url.password
+      ) {
+        continue
+      }
+
+      const citeIndex = typeof item?.cite_index === 'number'
+        ? item.cite_index
+        : typeof item?.citeIndex === 'number'
+          ? item.citeIndex
+          : undefined
+      this.searchResults.set(url.href, {
+        url: url.href,
+        title: rawTitle
+          .replace(/[\r\n[\]]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 300),
+        citeIndex,
+      })
+    }
+  }
+
+  private applySearchBatch(values: unknown[]): void {
+    const entries = [...this.searchResults.values()]
+    for (const value of values) {
+      const operation = record(value)
+      const match = safeString(operation?.p).match(/^(\d+)\/cite_index$/)
+      if (!match) continue
+      const index = Number.parseInt(match[1], 10)
+      const citeIndex = operation?.v
+      if (!entries[index] || typeof citeIndex !== 'number' || !Number.isFinite(citeIndex)) continue
+      entries[index].citeIndex = citeIndex
+      this.searchResults.set(entries[index].url, entries[index])
+    }
   }
 }
 
 export class DeepSeekStreamHandler {
-  private model: string
-  private sessionId: string
-  private isFirstChunk: boolean = true
-  private messageId: string = ''
-  private currentPath: string = ''
-  private searchResults: any[] = []
-  private thinkingStarted: boolean = false
-  private accumulatedTokenUsage: number = 2
-  private created: number
-  private onEnd?: () => void
-  private toolStreamParser?: ToolStreamParser
-  private toolCallingPlan?: ToolCallingPlan
-  private webSearchEnabled: boolean
-  private reasoningEffort: string | undefined
-  private isDone: boolean = false
-  private semanticModel: string
+  private readonly id: string
+  private readonly created = Math.floor(Date.now() / 1000)
+  private readonly decoder: DeepSeekEventDecoder
+  private isFirstChunk = true
+  private isDone = false
+  private hasOutput = false
+  private cleanupStarted = false
 
   constructor(
-    model: string,
-    sessionId: string,
-    onEnd?: () => void,
-    webSearchEnabled: boolean = false,
+    private readonly model: string,
+    private readonly onEnd?: () => void | Promise<void>,
+    webSearchEnabled = false,
     reasoningEffort?: string,
-    toolCallingPlan?: ToolCallingPlan,
-    semanticModel?: string
+    id = responseId(),
   ) {
-    this.model = model
-    this.semanticModel = (semanticModel || model).toLowerCase()
-    this.sessionId = sessionId
-    this.created = Math.floor(Date.now() / 1000)
-    this.onEnd = onEnd
-    this.toolCallingPlan = toolCallingPlan
-    this.toolStreamParser = toolCallingPlan?.shouldParseResponse ? new ToolStreamParser(toolCallingPlan) : undefined
-    this.webSearchEnabled = webSearchEnabled
-    this.reasoningEffort = reasoningEffort
+    this.id = id
+    this.decoder = new DeepSeekEventDecoder(Boolean(reasoningEffort), webSearchEnabled)
   }
 
-  getLastMessageId(): string {
-    return this.messageId
-  }
+  handleStream(stream: NodeJS.ReadableStream): NodeJS.ReadableStream {
+    const source = stream as Readable
+    const output = new PassThrough()
+    let buffer = ''
 
-  private isThinkingModel(): boolean {
-    return this.semanticModel.includes('think')
-      || this.semanticModel.includes('r1')
-      || this.semanticModel.includes('reasoner')
-      || !!this.reasoningEffort
-  }
+    source.on('data', (chunk: Buffer | string) => {
+      if (this.isDone) return
+      buffer += chunk.toString()
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
 
-  private isFoldModel(isThinkingModel: boolean): boolean {
-    return (this.semanticModel.includes('fold')
-      || this.semanticModel.includes('search')
-      || this.webSearchEnabled) && !isThinkingModel
-  }
-
-  private isSilentModel(): boolean {
-    return this.semanticModel.includes('silent')
-  }
-
-  private isSearchSilentModel(): boolean {
-    return this.semanticModel.includes('search-silent')
-  }
-
-  private shouldStripSearchControlMarker(): boolean {
-    return this.webSearchEnabled || this.semanticModel.includes('search')
-  }
-
-  private static normalizeSearchResult(result: any): any | null {
-    if (!result || typeof result !== 'object') return null
-
-    const url = result.url
-    const title = result.title
-    if (typeof url !== 'string' || typeof title !== 'string') return null
-
-    const citeIndex = typeof result.cite_index === 'number'
-      ? result.cite_index
-      : typeof result.citeIndex === 'number'
-        ? result.citeIndex
-        : undefined
-
-    const normalized = {
-      ...result,
-    }
-    delete normalized.cite_index
-    delete normalized.citeIndex
-    if (typeof citeIndex === 'number' && Number.isFinite(citeIndex)) {
-      normalized.cite_index = citeIndex
-    }
-
-    return normalized
-  }
-
-  private static mergeSearchResultsInto(target: any[], results: any[]): void {
-    for (const result of results) {
-      const normalized = DeepSeekStreamHandler.normalizeSearchResult(result)
-      if (!normalized) continue
-
-      const existingIndex = target.findIndex((item) => item.url === normalized.url)
-      if (existingIndex >= 0) {
-        target[existingIndex] = {
-          ...target[existingIndex],
-          ...normalized,
+      for (const line of lines) {
+        if (!line.trim() || !line.startsWith('data:')) continue
+        const data = line.slice(5).trim()
+        if (data === '[DONE]') {
+          this.finishStream(output)
+          return
         }
-      } else {
-        target.push(normalized)
+
+        const parsed = this.parseSse(data)
+        if (!parsed) continue
+        const providerError = providerErrorFromChunk(parsed)
+        if (providerError) {
+          this.failStream(output, providerError)
+          return
+        }
+        for (const delta of this.decoder.process(parsed)) {
+          this.hasOutput = true
+          output.write(this.createChunk(this.toPublicDelta(delta)))
+        }
       }
-    }
-  }
+    })
 
-  private static applySearchResultBatch(target: any[], operations: any[]): void {
-    for (const op of operations) {
-      const match = op?.p?.match(/^(\d+)\/cite_index$/)
-      if (!match) continue
-
-      const index = parseInt(match[1], 10)
-      if (target[index] && typeof op.v === 'number' && Number.isFinite(op.v)) {
-        target[index].cite_index = op.v
+    source.once('end', () => this.finishStream(output))
+    source.once('error', (error) => {
+      if (!this.isDone) {
+        this.isDone = true
+        output.destroy(error)
       }
-    }
+      this.cleanup()
+    })
+    output.once('close', () => {
+      if (!this.isDone && !source.destroyed) source.destroy()
+      this.cleanup()
+    })
+
+    return output
   }
 
-  private static formatSearchCitations(results: any[]): string {
-    const seenUrls = new Set<string>()
-    return results
-      .filter(r => Number.isFinite(r.cite_index) && typeof r.url === 'string' && typeof r.title === 'string')
-      .filter(r => {
-        if (seenUrls.has(r.url)) return false
-        seenUrls.add(r.url)
-        return true
-      })
-      .sort((a, b) => a.cite_index - b.cite_index)
-      .map(r => `[${r.cite_index}]: [${r.title}](${r.url})`)
-      .join('\n')
-  }
+  async handleNonStream(stream: NodeJS.ReadableStream): Promise<unknown> {
+    let content = ''
+    let reasoningContent = ''
+    let providerError: DeepSeekProviderError | undefined
 
-  private parseSSE(data: string): StreamChunk | null {
     try {
-      return JSON.parse(data)
-    } catch {
-      return null
+      let buffer = ''
+      for await (const chunk of stream) {
+        buffer += chunk.toString()
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim() || !line.startsWith('data:')) continue
+          const data = line.slice(5).trim()
+          if (data === '[DONE]') continue
+          const parsed = this.parseSse(data)
+          if (!parsed) continue
+          providerError = providerErrorFromChunk(parsed)
+          if (providerError) throw providerError
+          for (const delta of this.decoder.process(parsed)) {
+            if (delta.path === 'thinking') reasoningContent += delta.content
+            else content += delta.content
+          }
+        }
+      }
+
+      const citations = this.decoder.citations()
+      const answer = content.trim()
+      const answerWithCitations = citations
+        ? answer ? `${answer}\n\n${citations}` : citations
+        : answer
+      const reasoning = reasoningContent.trim()
+      if (!answerWithCitations && !reasoning) {
+        throw new DeepSeekProviderError(
+          'provider_empty_response',
+          502,
+          'DeepSeek returned an empty response.',
+        )
+      }
+
+      return {
+        id: this.id,
+        model: this.model,
+        object: 'chat.completion',
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: answerWithCitations,
+            ...(reasoning ? { reasoning_content: reasoning } : {}),
+          },
+          finish_reason: 'stop',
+        }],
+        created: this.created,
+      }
+    } finally {
+      await this.cleanup()
     }
   }
 
-  private createChunk(delta: { role?: string; content?: string; reasoning_content?: string; tool_calls?: any[] }, finishReason?: string): string {
+  private parseSse(data: string): StreamChunk | undefined {
+    try {
+      const parsed = JSON.parse(data)
+      return record(parsed) as StreamChunk | undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private toPublicDelta(delta: ContentDelta): {
+    role?: 'assistant'
+    content?: string
+    reasoning_content?: string
+  } {
+    const result: {
+      role?: 'assistant'
+      content?: string
+      reasoning_content?: string
+    } = {}
+    if (this.isFirstChunk) {
+      result.role = 'assistant'
+      this.isFirstChunk = false
+    }
+    if (delta.path === 'thinking') result.reasoning_content = delta.content
+    else result.content = delta.content
+    return result
+  }
+
+  private createChunk(
+    delta: { role?: 'assistant'; content?: string; reasoning_content?: string },
+    finishReason: 'stop' | null = null,
+  ): string {
     return `data: ${JSON.stringify({
-      id: `${this.sessionId}@${this.messageId}`,
+      id: this.id,
       model: this.model,
       object: 'chat.completion.chunk',
       choices: [{
         index: 0,
         delta,
-        finish_reason: finishReason || null,
+        finish_reason: finishReason,
       }],
       created: this.created,
     })}\n\n`
   }
 
-  async handleStream(stream: NodeJS.ReadableStream): Promise<NodeJS.ReadableStream> {
-    const transStream = new PassThrough()
-    const isThinkingModel = this.isThinkingModel()
-    const isSilentModel = this.isSilentModel()
-    const isFoldModel = this.isFoldModel(isThinkingModel)
-    const isSearchSilentModel = this.isSearchSilentModel()
-
-    let buffer = ''
-
-    stream.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString()
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.trim() || !line.startsWith('data:')) continue
-
-        const data = line.slice(5).trim()
-        if (data === '[DONE]') {
-          this.handleDone(transStream, isFoldModel, isSearchSilentModel)
-          return
-        }
-
-        const parsed = this.parseSSE(data)
-        if (!parsed) continue
-
-        const providerError = providerErrorFromChunk(parsed)
-        if (providerError) {
-          this.handleProviderError(transStream, providerError)
-          return
-        }
-
-        this.processChunk(parsed, transStream, isThinkingModel, isSilentModel, isFoldModel, isSearchSilentModel)
-      }
-    })
-
-    stream.on('end', () => {
-      this.handleDone(transStream, isFoldModel, isSearchSilentModel)
-    })
-
-    stream.on('error', (err) => {
-      transStream.emit('error', err)
-    })
-
-    return transStream
-  }
-
-  private processChunk(
-    chunk: StreamChunk,
-    transStream: PassThrough,
-    isThinkingModel: boolean,
-    isSilentModel: boolean,
-    isFoldModel: boolean,
-    isSearchSilentModel: boolean
-  ): void {
-    if (chunk.response_message_id && !this.messageId) {
-      this.messageId = chunk.response_message_id
-    }
-
-    const previousPath = this.currentPath
-
-    if (chunk.v && typeof chunk.v === 'object' && chunk.v.response) {
-      const isThinkingNow = chunk.v.response.thinking_enabled
-      this.currentPath = isThinkingNow ? 'thinking' : 'content'
-      
-      const fragments = chunk.v.response.fragments
-      if (Array.isArray(fragments) && fragments.length > 0) {
-        for (const fragment of fragments) {
-          if (Array.isArray(fragment.results)) {
-            DeepSeekStreamHandler.mergeSearchResultsInto(this.searchResults, fragment.results)
-          }
-
-          if (fragment.content) {
-            const fragmentType = fragment.type
-            const fragmentContent = fragment.content
-            
-            if (fragmentType === 'THINK') {
-              this.sendContent(fragmentContent, 'thinking', transStream, isSilentModel, isFoldModel, isSearchSilentModel)
-            } else if (fragmentType === 'ANSWER' || fragmentType === 'RESPONSE') {
-              this.sendContent(fragmentContent, 'content', transStream, isSilentModel, isFoldModel, isSearchSilentModel)
-            }
-          }
-        }
-      }
-    } else if (chunk.p === 'response/fragments') {
-      if (Array.isArray(chunk.v)) {
-        for (const fragment of chunk.v) {
-          if (fragment.content) {
-            const fragmentType = fragment.type
-            const fragmentContent = fragment.content
-            
-            if (fragmentType === 'THINK') {
-              this.currentPath = 'thinking'
-              this.sendContent(fragmentContent, 'thinking', transStream, isSilentModel, isFoldModel, isSearchSilentModel)
-            } else if (fragmentType === 'ANSWER' || fragmentType === 'RESPONSE') {
-              this.currentPath = 'content'
-              this.sendContent(fragmentContent, 'content', transStream, isSilentModel, isFoldModel, isSearchSilentModel)
-            }
-          }
-        }
-      }
-    } else if (chunk.p === 'response' && Array.isArray(chunk.v)) {
-      const hasThinking = chunk.v.some((e: any) => 
-        e.p === 'response' && e.v && typeof e.v === 'object' && e.v.thinking_enabled === true
+  private finishStream(output: PassThrough): void {
+    if (this.isDone) return
+    const citations = this.decoder.citations()
+    if (!this.hasOutput && !citations) {
+      this.failStream(
+        output,
+        new DeepSeekProviderError(
+          'provider_empty_response',
+          502,
+          'DeepSeek returned an empty response.',
+        ),
       )
-      if (hasThinking) {
-        this.currentPath = 'thinking'
-      }
-    }
-
-    if (chunk.p === 'response/search_status') return
-
-    if (chunk.p === 'response' && Array.isArray(chunk.v)) {
-      chunk.v.forEach((e: any) => {
-        if (e.p === 'accumulated_token_usage' && typeof e.v === 'number') {
-          this.accumulatedTokenUsage = e.v
-        }
-      })
-    }
-
-    if (
-      (chunk.p === 'response/search_results' || /^response\/fragments\/-?\d+\/results$/.test(chunk.p || ''))
-      && Array.isArray(chunk.v)
-    ) {
-      if (chunk.o !== 'BATCH') {
-        DeepSeekStreamHandler.mergeSearchResultsInto(this.searchResults, chunk.v)
-      } else {
-        DeepSeekStreamHandler.applySearchResultBatch(this.searchResults, chunk.v)
-      }
       return
     }
-
-    let content = ''
-    if (typeof chunk.v === 'string') {
-      content = chunk.v
-    } else if (Array.isArray(chunk.v)) {
-      content = chunk.v
-        .map((e: any) => {
-          if (Array.isArray(e.v)) {
-            return e.v.map((v: any) => v.content).join('')
-          }
-          return ''
-        })
-        .join('')
-    }
-
-    if (!content) return
-
-    // For thinking models, default to 'thinking' path if not set
-    let effectivePath = this.currentPath
-    if (!effectivePath && isThinkingModel) {
-      effectivePath = 'thinking'
-    }
-
-    this.sendContent(content, effectivePath, transStream, isSilentModel, isFoldModel, isSearchSilentModel)
+    this.isDone = true
+    if (citations) output.write(this.createChunk({ content: `\n\n${citations}` }))
+    output.write(this.createChunk({}, 'stop'))
+    output.write('data: [DONE]\n\n')
+    output.end()
+    this.cleanup()
   }
 
-  private sendContent(
-    content: string,
-    path: string,
-    transStream: PassThrough,
-    isSilentModel: boolean,
-    isFoldModel: boolean,
-    isSearchSilentModel: boolean
-  ): void {
-    const cleanedValue = content.replace(/FINISHED/g, '')
-    const filteredForSearch = stripSearchControlMarker(cleanedValue, this.shouldStripSearchControlMarker())
-    const processedContent = isSearchSilentModel
-      ? filteredForSearch.replace(/\[citation:(\d+)\]/g, '')
-      : filteredForSearch.replace(/\[citation:(\d+)\]/g, '[$1]')
-
-    // For 'content' path, intercept tool calls before text is streamed.
-    if ((path === 'content' || path === '') && this.toolStreamParser) {
-      const baseChunk = createBaseChunk(`${this.sessionId}@${this.messageId}`, this.model, this.created)
-      const chunks = this.toolStreamParser.push(processedContent, baseChunk, this.isFirstChunk)
-      
-      // Send any chunks generated by tool call processing
-      for (const chunk of chunks) {
-        transStream.write(`data: ${JSON.stringify(chunk)}\n\n`)
-        this.isFirstChunk = false
-      }
-      
-      // If we're buffering a tool call or already emitted tool calls, don't send as regular content
-      if (this.toolStreamParser.isBuffering() || this.toolStreamParser.hasEmittedToolCall()) {
-        return
-      }
-      
-      // If chunks were sent (regular content), we're done
-      if (chunks.length > 0) {
-        return
-      }
-    }
-
-    const delta: { role?: string; content?: string; reasoning_content?: string } = {}
-    let shouldSendDelta = true
-
-    if (this.isFirstChunk) {
-      delta.role = 'assistant'
-    }
-
-    if (path === 'thinking') {
-      if (isSilentModel) return
-
-      if (isFoldModel) {
-        if (!this.thinkingStarted) {
-          this.thinkingStarted = true
-          delta.content = `<details><summary>Thinking Process</summary><pre>${processedContent}`
-        } else {
-          delta.content = processedContent
-        }
-      } else {
-        if (processedContent) {
-          delta.reasoning_content = processedContent
-        } else {
-          shouldSendDelta = false
-        }
-      }
-    } else if (path === 'content') {
-      if (isFoldModel && this.thinkingStarted) {
-        delta.content = `</pre></details>${processedContent}`
-        this.thinkingStarted = false
-      } else {
-        delta.content = processedContent
-      }
-    } else {
-      delta.content = processedContent
-    }
-
-    if (shouldSendDelta && (delta.content !== undefined || delta.reasoning_content !== undefined)) {
-      transStream.write(this.createChunk(delta))
-      this.isFirstChunk = false
-    }
-  }
-
-  private handleDone(transStream: PassThrough, isFoldModel: boolean, isSearchSilentModel: boolean): void {
+  private failStream(output: PassThrough, error: DeepSeekProviderError): void {
     if (this.isDone) return
     this.isDone = true
-
-    // Flush tool call buffer before finishing
-    const baseChunk = createBaseChunk(`${this.sessionId}@${this.messageId}`, this.model, this.created)
-    const flushChunks = this.toolStreamParser?.flush(baseChunk) ?? []
-    for (const outChunk of flushChunks) {
-      transStream.write(`data: ${JSON.stringify(outChunk)}\n\n`)
-    }
-
-    if (isFoldModel && this.thinkingStarted) {
-      transStream.write(this.createChunk({ content: '</pre></details>' }))
-    }
-
-    if (this.searchResults.length > 0 && !isSearchSilentModel) {
-      const citations = DeepSeekStreamHandler.formatSearchCitations(this.searchResults)
-      
-      if (citations) {
-        transStream.write(this.createChunk({ content: `\n\n${citations}` }))
-      }
-    }
-
-    // Determine finish_reason based on whether we had tool calls
-    const finishReason = this.toolStreamParser?.hasEmittedToolCall() ? 'tool_calls' : 'stop'
-
-    transStream.write(this.createChunk({}, finishReason))
-    transStream.write('data: [DONE]\n\n')
-    transStream.end()
-    
-    // Call end callback
-    this.onEnd?.()
-  }
-
-  private handleProviderError(
-    transStream: PassThrough,
-    error: DeepSeekProviderError,
-  ): void {
-    if (this.isDone) return
-    this.isDone = true
-
-    transStream.write(`data: ${JSON.stringify({
+    output.write(`data: ${JSON.stringify({
       error: {
         message: error.message,
         type: 'provider_error',
@@ -503,205 +417,18 @@ export class DeepSeekStreamHandler {
         code: error.code,
       },
     })}\n\n`)
-    transStream.write('data: [DONE]\n\n')
-    transStream.end()
-    this.onEnd?.()
+    output.write('data: [DONE]\n\n')
+    output.end()
+    this.cleanup()
   }
 
-  async handleNonStream(stream: NodeJS.ReadableStream): Promise<any> {
-    let accumulatedContent = ''
-    let accumulatedThinkingContent = ''
-    let messageId = ''
-    let currentPath = ''
-    let accumulatedTokenUsage = 2
-    const searchResults: any[] = []
-    const isThinkingModel = this.isThinkingModel()
-    const isFoldModel = this.isFoldModel(isThinkingModel)
-    const isSearchSilentModel = this.isSearchSilentModel()
-    const shouldStripSearchControlMarker = this.shouldStripSearchControlMarker()
-
-    return new Promise((resolve, reject) => {
-      let buffer = ''
-      let providerFailed = false
-
-      stream.on('data', (chunk: Buffer) => {
-        if (providerFailed) return
-
-        buffer += chunk.toString()
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (!line.trim() || !line.startsWith('data:')) continue
-
-          const data = line.slice(5).trim()
-          if (data === '[DONE]') return
-
-          try {
-            const parsed = JSON.parse(data)
-
-            const providerError = providerErrorFromChunk(parsed)
-            if (providerError) {
-              providerFailed = true
-              reject(providerError)
-              return
-            }
-            
-            if (parsed.response_message_id && !messageId) {
-              messageId = parsed.response_message_id
-              this.messageId = parsed.response_message_id
-            }
-
-            if (parsed.v && typeof parsed.v === 'object' && parsed.v.response) {
-              const isThinkingNow = parsed.v.response.thinking_enabled
-              if (isThinkingNow !== undefined) {
-                currentPath = isThinkingNow ? 'thinking' : 'content'
-              }
-              
-              const fragments = parsed.v.response.fragments
-              if (Array.isArray(fragments) && fragments.length > 0) {
-                for (const fragment of fragments) {
-                  if (Array.isArray(fragment.results)) {
-                    DeepSeekStreamHandler.mergeSearchResultsInto(searchResults, fragment.results)
-                  }
-
-                  if (fragment.content) {
-                    let cleanedFragment = fragment.content.replace(/FINISHED/g, '')
-                    cleanedFragment = stripSearchControlMarker(cleanedFragment, shouldStripSearchControlMarker)
-                    if (fragment.type === 'THINK') {
-                      accumulatedThinkingContent += cleanedFragment
-                    } else if (fragment.type === 'ANSWER' || fragment.type === 'RESPONSE') {
-                      accumulatedContent += cleanedFragment
-                    }
-                  }
-                }
-              }
-            } else if (parsed.p === 'response/fragments') {
-              if (Array.isArray(parsed.v)) {
-                for (const fragment of parsed.v) {
-                  if (fragment.content) {
-                    let cleanedFragment = fragment.content.replace(/FINISHED/g, '')
-                    cleanedFragment = stripSearchControlMarker(cleanedFragment, shouldStripSearchControlMarker)
-                    if (fragment.type === 'THINK') {
-                      currentPath = 'thinking'
-                      accumulatedThinkingContent += cleanedFragment
-                    } else if (fragment.type === 'ANSWER' || fragment.type === 'RESPONSE') {
-                      currentPath = 'content'
-                      accumulatedContent += cleanedFragment
-                    }
-                  }
-                }
-              }
-            } else if (parsed.p === 'response' && Array.isArray(parsed.v)) {
-              const hasThinking = parsed.v.some((e: any) => 
-                e.p === 'response' && e.v && typeof e.v === 'object' && e.v.thinking_enabled === true
-              )
-              if (hasThinking) {
-                currentPath = 'thinking'
-              }
-            }
-
-            if (
-              (parsed.p === 'response/search_results' || /^response\/fragments\/-?\d+\/results$/.test(parsed.p || ''))
-              && Array.isArray(parsed.v)
-            ) {
-              if (parsed.o !== 'BATCH') {
-                DeepSeekStreamHandler.mergeSearchResultsInto(searchResults, parsed.v)
-              } else {
-                DeepSeekStreamHandler.applySearchResultBatch(searchResults, parsed.v)
-              }
-              continue
-            }
-
-            // For thinking models, default to 'thinking' path if not set
-            if (!currentPath && isThinkingModel) {
-              currentPath = 'thinking'
-            }
-            
-            // For fold models (web search only), default to 'content' path if not set
-            if (!currentPath && isFoldModel) {
-              currentPath = 'content'
-            }
-
-            if (typeof parsed.v === 'object' && Array.isArray(parsed.v)) {
-              parsed.v.forEach((e: any) => {
-                if (e.accumulated_token_usage && typeof e.v === 'number') {
-                  accumulatedTokenUsage = e.v
-                }
-                if (Array.isArray(e.v)) {
-                  let cleanedValue = e.v.map((v: any) => v.content).join('').replace(/FINISHED/g, '')
-                  cleanedValue = stripSearchControlMarker(cleanedValue, shouldStripSearchControlMarker)
-                  if (currentPath === 'thinking') {
-                    accumulatedThinkingContent += cleanedValue
-                  } else if (currentPath === 'content') {
-                    accumulatedContent += cleanedValue
-                  }
-                }
-              })
-            }
-
-            if (typeof parsed.v === 'string') {
-              let cleanedValue = parsed.v.replace(/FINISHED/g, '')
-              cleanedValue = stripSearchControlMarker(cleanedValue, shouldStripSearchControlMarker)
-              if (currentPath === 'thinking') {
-                accumulatedThinkingContent += cleanedValue
-              } else if (currentPath === 'content') {
-                accumulatedContent += cleanedValue
-              }
-            }
-          } catch {
-            // Ignore parse errors
-          }
-        }
-      })
-
-      stream.on('end', () => {
-        if (providerFailed) return
-
-        // Parse tool calls from accumulated content
-        const { content: cleanContent, toolCalls } = this.toolCallingPlan?.shouldParseResponse
-          ? { content: accumulatedContent, toolCalls: [] }
-          : parseToolCallsFromText(accumulatedContent)
-        const citations = isSearchSilentModel
-          ? ''
-          : DeepSeekStreamHandler.formatSearchCitations(searchResults)
-        const trimmedContent = cleanContent.trim()
-        const contentWithCitations = citations
-          ? (trimmedContent ? `${trimmedContent}\n\n${citations}` : citations)
-          : trimmedContent
-
-        const message: any = {
-          role: 'assistant',
-          reasoning_content: accumulatedThinkingContent.trim() || undefined,
-          content: toolCalls.length > 0 ? null : contentWithCitations,
-        }
-
-        if (toolCalls.length > 0) {
-          message.tool_calls = toolCalls
-        }
-
-        // Log for debugging
-        if (isThinkingModel || accumulatedThinkingContent) {
-          console.log('[DeepSeek] Non-stream thinking model:', this.model)
-          console.log('[DeepSeek] Accumulated thinking content length:', accumulatedThinkingContent.length)
-          console.log('[DeepSeek] Accumulated content length:', accumulatedContent.length)
-        }
-
-        resolve({
-          id: `${this.sessionId}@${messageId}`,
-          model: this.model,
-          object: 'chat.completion',
-          choices: [{
-            index: 0,
-            message,
-            finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
-          }],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: accumulatedTokenUsage },
-          created: this.created,
-        })
-      })
-
-      stream.on('error', reject)
-    })
+  private async cleanup(): Promise<void> {
+    if (this.cleanupStarted) return
+    this.cleanupStarted = true
+    try {
+      await this.onEnd?.()
+    } catch {
+      // Cleanup is best effort and must not alter the client response.
+    }
   }
 }

@@ -34,7 +34,6 @@ import {
   testAccount,
   updateAccount,
   updateApiKey,
-  updateProvider,
   updateSettings,
 } from './api'
 import type {
@@ -50,7 +49,7 @@ type View = 'overview' | 'providers' | 'keys' | 'activity' | 'security'
 
 const navigation: Array<{ id: View; label: string; icon: typeof CircleGauge }> = [
   { id: 'overview', label: 'Genel bakış', icon: CircleGauge },
-  { id: 'providers', label: 'Sağlayıcılar', icon: Layers3 },
+  { id: 'providers', label: 'DeepSeek hesapları', icon: Layers3 },
   { id: 'keys', label: 'API anahtarları', icon: KeyRound },
   { id: 'activity', label: 'İstek aktivitesi', icon: Activity },
   { id: 'security', label: 'Güvenlik ve ayarlar', icon: ShieldCheck },
@@ -195,10 +194,6 @@ export function App() {
                   providers={data.providers}
                   accounts={data.accounts}
                   onAdd={setAccountProvider}
-                  onToggle={(provider) => run(
-                    () => updateProvider(provider.id, !provider.enabled),
-                    `${provider.name} güncellendi.`,
-                  )}
                   onAccountToggle={(account) => run(
                     () => updateAccount(account.id, { status: account.status === 'active' ? 'inactive' : 'active' }),
                     'Hesap durumu güncellendi.',
@@ -447,7 +442,6 @@ function ProvidersPage(props: {
   providers: Provider[]
   accounts: Account[]
   onAdd: (provider: Provider) => void
-  onToggle: (provider: Provider) => void
   onAccountToggle: (account: Account) => void
   onAccountEdit: (account: Account) => void
   onAccountTest: (account: Account) => void
@@ -464,16 +458,11 @@ function ProvidersPage(props: {
               <div>
                 <h2>{provider.name}</h2>
                 <p>{provider.description}</p>
-                <span className={`integration-badge ${provider.integrationMode ?? 'web-session'}`}>
-                  {provider.integrationMode === 'official-api' ? 'Resmi API' : 'Web session'}
-                  {' · '}öncelik {provider.routingPriority}
-                </span>
+                <span className="integration-badge web-session">Web session · metin tabanlı</span>
               </div>
-              <button
-                className={`switch ${provider.enabled ? 'is-on' : ''}`}
-                onClick={() => props.onToggle(provider)}
-                aria-label={`${provider.name} ${provider.enabled ? 'kapat' : 'aç'}`}
-              ><i /></button>
+              <StatusBadge status={accounts.some((account) => account.status === 'active') ? 'success' : 'warning'}>
+                {accounts.some((account) => account.status === 'active') ? 'Hazır' : 'Hesap gerekli'}
+              </StatusBadge>
             </div>
             <div className="model-chips">
               {provider.supportedModels.slice(0, 4).map((model) => <span key={model}>{model}</span>)}
@@ -488,6 +477,13 @@ function ProvidersPage(props: {
                   <div>
                     <strong>{account.name}</strong>
                     <span>{account.todayUsed}/{account.dailyLimit ?? '∞'} bugün</span>
+                    {account.health && (
+                      <span>
+                        Son kontrol: {formatDate(account.health.checkedAt)}
+                        {' · '}{account.health.latencyMs} ms
+                      </span>
+                    )}
+                    {account.cooldownUntil && <span>Geçici bekleme: {formatDate(account.cooldownUntil)}</span>}
                   </div>
                   <button className="mini-button" onClick={() => props.onAccountToggle(account)}>
                     {account.status === 'active' ? 'Duraklat' : 'Etkinleştir'}
@@ -582,7 +578,7 @@ function SecurityPage({
   onSave,
 }: {
   settings: GatewaySettings
-  onSave: (settings: Pick<GatewaySettings, 'loadBalanceStrategy' | 'requestTimeout' | 'sessionTimeout' | 'deleteAfterTimeout'>) => void
+  onSave: (settings: Pick<GatewaySettings, 'loadBalanceStrategy'>) => void
 }) {
   const [form, setForm] = useState(settings)
   return (
@@ -591,27 +587,15 @@ function SecurityPage({
         <PanelHeader title="Yönlendirme politikası" subtitle="Değişiklikler yeni isteklere uygulanır." />
         <form className="settings-form" onSubmit={(event) => {
           event.preventDefault()
-          onSave(form)
+          onSave({ loadBalanceStrategy: form.loadBalanceStrategy })
         }}>
           <Field label="Hesap seçimi">
             <select value={form.loadBalanceStrategy} onChange={(event) => setForm({ ...form, loadBalanceStrategy: event.target.value as GatewaySettings['loadBalanceStrategy'] })}>
               <option value="round-robin">Round robin</option>
-              <option value="fill-first">En az kullanılan hesap</option>
+              <option value="least-used">En az kullanılan hesap</option>
               <option value="failover">Sabit öncelik / failover</option>
             </select>
           </Field>
-          <div className="form-grid">
-            <Field label="İstek timeout (ms)">
-              <input type="number" min={1000} max={900000} value={form.requestTimeout} onChange={(event) => setForm({ ...form, requestTimeout: Number(event.target.value) })} />
-            </Field>
-            <Field label="Oturum timeout (dk)">
-              <input type="number" min={1} max={1440} value={form.sessionTimeout} onChange={(event) => setForm({ ...form, sessionTimeout: Number(event.target.value) })} />
-            </Field>
-          </div>
-          <label className="check-row">
-            <input type="checkbox" checked={form.deleteAfterTimeout} onChange={(event) => setForm({ ...form, deleteAfterTimeout: event.target.checked })} />
-            <span><strong>Süresi dolan provider oturumlarını temizle</strong><small>Yerel session metadata’sını kaldırır.</small></span>
-          </label>
           <button className="primary-button">Ayarları kaydet</button>
         </form>
       </section>
@@ -624,10 +608,15 @@ function SecurityPage({
           <SecurityItem label="Custom providers" value={settings.security.customProvidersEnabled ? 'Açık' : 'Kapalı'} good={!settings.security.customProvidersEnabled} />
           <SecurityItem label="Remote media" value={settings.security.remoteMediaEnabled ? 'Açık' : 'Kapalı'} good={!settings.security.remoteMediaEnabled} />
           <SecurityItem label="Secure cookies" value={settings.security.secureCookies ? 'Zorunlu' : 'Dev modu'} good={settings.security.secureCookies} />
+          <SecurityItem label="Provider" value={settings.security.supportedProvider} />
+          <SecurityItem label="İstek kapsamı" value={settings.security.supportedInput} />
+          <SecurityItem label="İstek timeout" value={`${settings.requestTimeout} ms (deployment)`} />
+          <SecurityItem label="Stream idle timeout" value={`${settings.streamIdleTimeout} ms`} />
+          <SecurityItem label="Hesap sağlık aralığı" value={settings.accountHealthInterval > 0 ? `${settings.accountHealthInterval} ms` : 'Kapalı'} />
         </div>
         <div className="risk-note">
           <AlertTriangle size={18} />
-          <p><strong>Provider kullanım riski</strong> Web oturumu tabanlı adaptörler sağlayıcı şartlarına ve hesap kontrollerine tabidir. Kritik iş yükleri resmi API’lerle yürütülmelidir.</p>
+          <p><strong>Web oturumu sınırı</strong> DeepSeek web protokolündeki değişiklikler erişimi kesebilir. Bu gateway resmi API fallback’i sunmaz; ayrı ve kontrollü bir DeepSeek hesabı kullanın.</p>
         </div>
       </section>
     </div>
@@ -792,13 +781,23 @@ function ApiKeyPanel(props: {
 }
 
 function OneTimeKey({ value, onClose }: { value: string; onClose: () => void }) {
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'key' | 'example' | null>(null)
+  const baseUrl = window.location.origin
+  const example = `OPENAI_BASE_URL=${baseUrl}/v1\nOPENAI_API_KEY=<bu-ekrandaki-anahtar>\n\ncurl "${baseUrl}/v1/models" \\\n  -H "Authorization: Bearer $OPENAI_API_KEY"`
   return (
     <Modal title="API anahtarınız hazır" subtitle="Bu değer tekrar gösterilmeyecek." onClose={onClose} narrow>
       <div className="one-time-key">
         <code>{value}</code>
-        <button onClick={() => void navigator.clipboard.writeText(value).then(() => setCopied(true))}>
-          {copied ? <Check size={17} /> : <Copy size={17} />} {copied ? 'Kopyalandı' : 'Kopyala'}
+        <button onClick={() => void navigator.clipboard.writeText(value).then(() => setCopied('key'))}>
+          {copied === 'key' ? <Check size={17} /> : <Copy size={17} />} {copied === 'key' ? 'Kopyalandı' : 'Kopyala'}
+        </button>
+      </div>
+      <div className="credential-box">
+        <div><Server size={16} /><span>Uzak istemci kurulumu</span></div>
+        <pre><code>{example}</code></pre>
+        <button className="secondary-button full" onClick={() => void navigator.clipboard.writeText(example).then(() => setCopied('example'))}>
+          {copied === 'example' ? <Check size={17} /> : <Copy size={17} />}
+          {copied === 'example' ? 'Komut kopyalandı' : 'Kurulum örneğini kopyala'}
         </button>
       </div>
       <div className="risk-note"><AlertTriangle size={18} /><p>Anahtarı yalnız güvenli secret manager’da saklayın. URL, kaynak kod veya sohbet mesajına eklemeyin.</p></div>

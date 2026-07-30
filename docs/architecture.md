@@ -1,37 +1,51 @@
 # Architecture
 
-## Runtime
+## Request path
 
-The application is a single Node.js process:
+1. Fastify applies body, authentication, key scope, RPM, quota, and concurrency limits.
+2. A strict schema accepts only the documented text-chat contract.
+3. `ProviderRoutingEngine` selects an active DeepSeek web account.
+4. `DeepSeekAdapter` exchanges the stored user token, creates a fresh upstream
+   conversation, completes the proof-of-work challenge, and starts one request.
+5. `DeepSeekStreamHandler` emits gateway-owned OpenAI-style IDs and sanitized
+   text/citation output.
+6. The upstream conversation is deleted after success, error, timeout, abort, or
+   downstream disconnect.
 
-1. Fastify accepts admin and OpenAI-compatible requests.
-2. Authentication, quota, schema, body-size, and concurrency guards run before routing.
-3. `ProviderRoutingEngine` selects an enabled built-in provider and active account.
-4. The legacy provider implementation is reachable only through
-   `src/legacy/provider-runtime.js`.
-5. Streaming responses are primed before HTTP 200 is committed, allowing safe
-   failover only before the first byte.
-6. SQLite stores configuration, encrypted credentials, hashed API keys, sessions,
-   metadata-only request records, and audit events.
-7. React/Vite assets are served from `/admin/`.
+There is no cross-request conversation cache. Clients preserve context by
+resending prior text messages. Databases created by pre-hardening versions may
+retain an inert `sessions` table, but the runtime never reads or writes it and
+new databases do not create it.
+
+## Runtime components
+
+- Fastify API and admin server
+- DeepSeek web adapter with fixed code-owned endpoints
+- React/Vite admin assets under `/admin/`
+- SQLite for encrypted account credentials, hashed API keys, settings, and
+  metadata-only request/audit records
+- In-memory concurrency, rate, health, and circuit state
+
+Run one application replica per SQLite volume. Horizontal scaling requires a
+coordinated database, quota, and circuit implementation.
 
 ## Trust boundaries
 
-- Client API keys are untrusted and never accepted in URLs.
-- Admin browser requests require exact origin, signed session, and CSRF validation.
-- Provider responses and errors are untrusted.
-- Provider endpoints are fixed built-ins; arbitrary custom URLs are prohibited.
-- Remote image URLs are prohibited. Supported image inputs use validated,
-  bounded base64 data URLs only.
-- No production prompt or completion body crosses the persistence boundary.
+- Client requests, analytics exports, and DeepSeek responses are untrusted.
+- Client credentials are accepted only in `Authorization: Bearer`.
+- Admin mutations require a signed session, exact allowed origin, and CSRF token.
+- Provider endpoints cannot be supplied by users or database records.
+- Media and tool calls are rejected before routing.
+- Prompt and completion bodies never cross the persistence or log boundary.
 
-## Persistence
+## Failure semantics
 
-`/data/chat2api.sqlite` uses WAL, foreign keys, a busy timeout, and mode `0600`.
-Provider credentials are encrypted independently before insertion. Request history
-is bounded by the configured metadata log limit; audit records are bounded to 2,000
-entries, and daily quota rows older than 90 days are pruned.
+- Invalid client input: `400`
+- Missing/invalid gateway key: `401` or `403`
+- No usable DeepSeek account: `503`
+- DeepSeek throttling: `429` with bounded retry guidance
+- DeepSeek timeout: `504`
+- Protocol/upstream failure: sanitized `502`
 
-The gateway does not provide distributed locking. Run one replica per SQLite
-volume. Horizontal scaling requires replacing local rate/concurrency state and
-SQLite with coordinated services.
+Streaming responses are primed before the HTTP success is committed. After the
+first byte, errors are emitted as SSE error objects and the stream terminates.

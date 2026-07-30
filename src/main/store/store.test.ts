@@ -18,19 +18,14 @@ describe('encrypted gateway store', () => {
 
   afterEach(() => store.close())
 
-  it('seeds providers disabled and masks credentials by default', () => {
-    expect(store.getProviders()).not.toHaveLength(0)
-    expect(store.getProviders().every((provider) => !provider.enabled)).toBe(true)
-    expect(store.getProviderById('deepseek-api')).toMatchObject({
-      apiEndpoint: 'https://api.deepseek.com',
-      chatPath: '/chat/completions',
-      routingPriority: 10,
-      integrationMode: 'official-api',
+  it('exposes only the enabled DeepSeek web provider and masks credentials by default', () => {
+    expect(store.getProviders()).toHaveLength(1)
+    expect(store.getProviders()[0]).toMatchObject({
+      id: 'deepseek',
+      enabled: true,
+      authType: 'userToken',
     })
-    expect(store.getProviderById('deepseek')).toMatchObject({
-      routingPriority: 100,
-      integrationMode: 'web-session',
-    })
+    expect(store.getProviderById('deepseek-api')).toBeUndefined()
 
     const accountId = randomUUID()
     store.addAccount({
@@ -49,31 +44,24 @@ describe('encrypted gateway store', () => {
     })
   })
 
-  it('merges partial credential rotation without dropping existing fields', () => {
+  it('rotates the DeepSeek web credential without exposing it', () => {
     const accountId = randomUUID()
     store.addAccount({
       id: accountId,
-      providerId: 'mimo',
-      name: 'MiMo account',
-      credentials: {
-        service_token: 'service-secret',
-        user_id: 'user-1',
-        ph_token: 'old-ph-secret',
-      },
+      providerId: 'deepseek',
+      name: 'DeepSeek account',
+      credentials: { token: 'old-token' },
       status: 'active',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     })
 
     store.updateAccount(accountId, {
-      credentials: { ph_token: 'new-ph-secret' },
+      credentials: { token: 'new-token' },
     })
 
-    expect(store.getAccountById(accountId, true)?.credentials).toEqual({
-      service_token: 'service-secret',
-      user_id: 'user-1',
-      ph_token: 'new-ph-secret',
-    })
+    expect(store.getAccountById(accountId)?.credentials).toEqual({})
+    expect(store.getAccountById(accountId, true)?.credentials).toEqual({ token: 'new-token' })
   })
 
   it('stores API keys as hashes and enforces daily quota atomically', () => {
@@ -147,14 +135,10 @@ describe('encrypted gateway store', () => {
 
   it('prunes request metadata to the configured retention limit', () => {
     store.updateConfig({
-      requestLogConfig: {
-        enabled: true,
-        maxEntries: 2,
-        includeBodies: false,
-      },
+      requestLogMaxEntries: 10,
     })
 
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 11; index += 1) {
       store.startRequestLog({
         requestId: randomUUID(),
         method: 'POST',
@@ -165,8 +149,19 @@ describe('encrypted gateway store', () => {
     }
 
     const persisted = store.listRequestLogs(10)
-    expect(persisted).toHaveLength(2)
-    expect(persisted.map((entry) => entry.model)).toEqual(['model-2', 'model-1'])
+    expect(persisted).toHaveLength(10)
+    expect(persisted.map((entry) => entry.model)).toEqual([
+      'model-10',
+      'model-9',
+      'model-8',
+      'model-7',
+      'model-6',
+      'model-5',
+      'model-4',
+      'model-3',
+      'model-2',
+      'model-1',
+    ])
   })
 
   it('fails closed when the persistent credential vault key is wrong', () => {

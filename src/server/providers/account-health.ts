@@ -1,7 +1,6 @@
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
 import type { Account, Provider } from '../../main/store/types.js'
 
-const DEEPSEEK_MODELS_ENDPOINT = 'https://api.deepseek.com/models'
 const DEEPSEEK_WEB_HEALTH_ENDPOINT = 'https://chat.deepseek.com/api/v0/users/current'
 
 export type AccountHealthStatus =
@@ -36,10 +35,6 @@ function hasDeepSeekWebAccessToken(value: unknown): boolean {
   const data = record(root?.data)
   const bizData = record(data?.biz_data) ?? record(root?.biz_data)
   return typeof bizData?.token === 'string' && bizData.token.length > 0
-}
-
-function hasOfficialModelList(value: unknown): boolean {
-  return Array.isArray(record(value)?.data)
 }
 
 function result(
@@ -111,28 +106,6 @@ export async function checkProviderAccount(
       })
     }
 
-    if (provider.id === 'deepseek-api') {
-      const apiKey = account.credentials.apiKey
-      if (!apiKey) return fromStatus(startedAt, 401)
-
-      const response = await httpGet(DEEPSEEK_MODELS_ENDPOINT, {
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        timeout: 10_000,
-        validateStatus: () => true,
-      })
-      if (response.status !== 200) return fromStatus(startedAt, response.status)
-      if (!hasOfficialModelList(response.data)) return fromStatus(startedAt, 502)
-
-      return result(startedAt, {
-        healthy: true,
-        status: 'healthy',
-        code: 'provider_healthy',
-        message: 'Official DeepSeek API credential is valid.',
-      })
-    }
   } catch (cause) {
     if (cause instanceof AxiosError && cause.response?.status) {
       return fromStatus(startedAt, cause.response.status)

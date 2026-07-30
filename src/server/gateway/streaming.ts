@@ -49,3 +49,29 @@ export async function primeStream(
     readable.resume()
   })
 }
+
+export function enforceIdleTimeout(
+  stream: Readable,
+  timeoutMs: number,
+): Readable {
+  let timeout: NodeJS.Timeout | undefined
+
+  const clear = () => {
+    if (timeout) clearTimeout(timeout)
+    timeout = undefined
+  }
+  const arm = () => {
+    clear()
+    timeout = setTimeout(() => {
+      stream.destroy(new Error('Upstream stream idle timeout'))
+    }, timeoutMs)
+    timeout.unref()
+  }
+
+  stream.on('data', arm)
+  stream.once('end', clear)
+  stream.once('close', clear)
+  stream.once('error', clear)
+  arm()
+  return stream
+}

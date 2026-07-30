@@ -44,21 +44,24 @@ describe('gateway safety controls', () => {
     expect(gate.tryAcquire()).toBeTypeOf('function')
   })
 
-  it('rejects all remote media and accepts only canonical base64 images', () => {
-    const request = (url: string) => ({
+  it('accepts text chat and rejects media, tools, and unknown request fields', () => {
+    const request = (content: unknown, extra: Record<string, unknown> = {}) => ({
       model: 'test-model',
       messages: [{
         role: 'user',
-        content: [{ type: 'image_url', image_url: { url } }],
+        content,
       }],
+      ...extra,
     })
 
-    expect(() => parseChatRequest(request('https://example.com/image.jpg'))).toThrow()
-    expect(() => parseChatRequest(request('data:text/html;base64,PGgxPk5vPC9oMT4='))).toThrow()
-    expect(() => parseChatRequest(request('data:image/png;base64,***'))).toThrow()
-    expect(() => parseChatRequest(request('data:image/png;base64,aGVsbG8='))).toThrow()
-    expect(parseChatRequest(request('data:image/png;base64,iVBORw0KGgo='))).toMatchObject({
+    expect(parseChatRequest(request('hello'))).toMatchObject({
       model: 'test-model',
+      messages: [{ role: 'user', content: 'hello' }],
     })
+    expect(() => parseChatRequest(request([
+      { type: 'image_url', image_url: { url: 'https://example.com/image.jpg' } },
+    ]))).toThrow()
+    expect(() => parseChatRequest(request('hello', { tools: [] }))).toThrow()
+    expect(() => parseChatRequest(request('hello', { temperature: 0.5 }))).toThrow()
   })
 })
