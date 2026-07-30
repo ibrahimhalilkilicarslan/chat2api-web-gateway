@@ -13,6 +13,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   Filter,
   Gauge,
   KeyRound,
@@ -55,9 +56,11 @@ import {
   updateAccount,
   updateApiKey,
   updateSettings,
+  validateAccountCredentials,
 } from './api'
 import type {
   Account,
+  AccountHealthResult,
   ApiKeyRecord,
   AuditEvent,
   DashboardData,
@@ -744,11 +747,13 @@ function OverviewPage({
       actionLabel: 'Anahtar oluştur',
     },
     {
-      label: 'İlk başarılı istek',
-      detail: 'Gateway üzerinden tamamlanan çağrı',
-      complete: data.activity.some((record) => record.status === 'success'),
-      action: () => onNavigate('keys'),
-      actionLabel: 'Bağlantıyı kur',
+      label: 'Trafik doğrulaması',
+      detail: data.overview.gateway.readiness.status === 'operational'
+        ? `Son başarılı istek ${formatRelativeTime(data.overview.gateway.readiness.latestSuccessAt)}`
+        : readinessReasonLabel(data.overview.gateway.readiness.reasonCode),
+      complete: data.overview.gateway.readiness.status === 'operational',
+      action: () => onNavigate('activity'),
+      actionLabel: 'Durumu incele',
     },
   ]
   const readinessCount = readiness.filter((item) => item.complete).length
@@ -1069,8 +1074,14 @@ function ApiKeysPage(props: {
 
         <div className="key-grid">
           {filtered.map((record) => {
-            const quotaPercent = Math.min(100, Math.round((record.usageCount / record.dailyQuota) * 100))
+            const quotaPercent = Math.min(100, Math.round((record.todayUsed / record.dailyQuota) * 100))
             const expired = Boolean(record.expiresAt && record.expiresAt <= Date.now())
+            const expiresSoon = Boolean(
+              record.expiresAt
+                && record.expiresAt > Date.now()
+                && record.expiresAt <= Date.now() + 7 * 24 * 60 * 60_000,
+            )
+            const quotaWarning = quotaPercent >= 80
             const statusTone = expired ? 'danger' : record.enabled ? 'success' : 'neutral'
             const statusLabel = expired ? 'Süresi doldu' : record.enabled ? 'Aktif' : 'Kapalı'
             return (
@@ -1097,10 +1108,26 @@ function ApiKeysPage(props: {
                     {record.replacedById ? 'Yeni anahtara geçiş süresinde' : 'Rotasyon ile oluşturuldu'}
                   </div>
                 )}
+                {record.managedByEnvironment && (
+                  <div className="inline-warning">
+                    <AlertTriangle size={15} /> Ortam anahtarı panelden döndürülemez; yalnız acil yönetim ve bootstrap için kullanın.
+                  </div>
+                )}
+                {expiresSoon && (
+                  <div className="inline-warning">
+                    <Clock3 size={15} /> Anahtar {formatRelativeTime(record.expiresAt)} sona erecek. İstemci geçişini planlayın.
+                  </div>
+                )}
+                {quotaWarning && (
+                  <div className={`inline-warning ${quotaPercent >= 100 ? 'danger' : ''}`}>
+                    <Gauge size={15} /> Günlük kotanın %{quotaPercent} kadarı kullanıldı.
+                  </div>
+                )}
                 <div className="usage-progress">
-                  <div><span>Toplam kullanım / günlük kota</span><strong>{formatNumber(record.usageCount)} / {formatNumber(record.dailyQuota)}</strong></div>
+                  <div><span>Bugünkü kullanım / günlük kota</span><strong>{formatNumber(record.todayUsed)} / {formatNumber(record.dailyQuota)}</strong></div>
                   <i><span style={{ width: `${quotaPercent}%` }} /></i>
                 </div>
+                <small className="lifetime-usage">Toplam {formatNumber(record.usageCount)} doğrulanmış istemci isteği</small>
                 {!record.managedByEnvironment && (
                   <footer>
                     <button className="secondary-button compact" onClick={() => props.onToggle(record)}>
@@ -1249,6 +1276,15 @@ function SecurityPage({
   onExportAudit: () => void
 }) {
   const [strategy, setStrategy] = useState(settings.loadBalanceStrategy)
+  const [auditQuery, setAuditQuery] = useState('')
+  const [auditOutcome, setAuditOutcome] = useState<'all' | AuditEvent['outcome']>('all')
+  const [auditLimit, setAuditLimit] = useState(10)
+  const filteredAudit = audit.filter((event) => {
+    const searchable = `${event.action} ${auditActionLabel(event.action)} ${event.actor} ${event.targetType ?? ''}`.toLowerCase()
+    return searchable.includes(auditQuery.toLowerCase())
+      && (auditOutcome === 'all' || event.outcome === auditOutcome)
+  })
+  const visibleAudit = filteredAudit.slice(0, auditLimit)
   const securityChecks = [
     ['Credential storage', settings.security.credentialEncryption],
     ['API key storage', settings.security.apiKeyStorage],
@@ -1349,15 +1385,42 @@ function SecurityPage({
       <section className="panel audit-panel">
         <PanelHeader
           title="Yönetim audit günlüğü"
-          subtitle="Hassas değer içermeyen işlem izi"
+          subtitle={`${filteredAudit.length} kayıt · hassas değer içermeyen işlem izi`}
           action={(
             <button className="secondary-button compact" onClick={onExportAudit}>
               <Download size={15} /> CSV indir
             </button>
           )}
         />
+        <div className="toolbar audit-toolbar">
+          <label className="search-field">
+            <Search size={16} />
+            <input
+              value={auditQuery}
+              onChange={(event) => {
+                setAuditQuery(event.target.value)
+                setAuditLimit(10)
+              }}
+              placeholder="İşlem, aktör veya hedef ara"
+              aria-label="Audit kayıtlarında ara"
+            />
+          </label>
+          <SegmentedControl
+            value={auditOutcome}
+            options={[
+              { value: 'all', label: 'Tümü' },
+              { value: 'success', label: 'Başarılı' },
+              { value: 'failure', label: 'Başarısız' },
+            ]}
+            onChange={(value) => {
+              setAuditOutcome(value)
+              setAuditLimit(10)
+            }}
+          />
+          <span className="result-count">{visibleAudit.length} gösteriliyor</span>
+        </div>
         <div className="audit-list">
-          {audit.slice(0, 30).map((event) => (
+          {visibleAudit.map((event) => (
             <div key={event.id}>
               <span className={`audit-icon ${event.outcome}`}>
                 {event.outcome === 'success' ? <Check size={14} /> : <AlertTriangle size={14} />}
@@ -1371,8 +1434,20 @@ function SecurityPage({
               </StatusBadge>
             </div>
           ))}
-          {audit.length === 0 && <div className="empty-state compact-empty"><ShieldCheck size={23} /><strong>Henüz audit kaydı yok</strong></div>}
+          {filteredAudit.length === 0 && (
+            <div className="empty-state compact-empty">
+              <ShieldCheck size={23} />
+              <strong>{audit.length === 0 ? 'Henüz audit kaydı yok' : 'Filtreyle eşleşen kayıt yok'}</strong>
+            </div>
+          )}
         </div>
+        {visibleAudit.length < filteredAudit.length && (
+          <div className="audit-load-more">
+            <button className="secondary-button compact" onClick={() => setAuditLimit((current) => current + 10)}>
+              10 kayıt daha göster
+            </button>
+          </div>
+        )}
       </section>
 
       <div className="risk-note wide">
@@ -1400,20 +1475,67 @@ function AccountPanel(props: {
   const [email, setEmail] = useState(props.account?.email ?? '')
   const [dailyLimit, setDailyLimit] = useState(props.account ? String(props.account.dailyLimit ?? '') : '500')
   const [credentials, setCredentials] = useState<Record<string, string>>({})
+  const [validation, setValidation] = useState<AccountHealthResult | null>(null)
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const [validating, setValidating] = useState(false)
+  const [showCredential, setShowCredential] = useState(false)
+  const [providerOpened, setProviderOpened] = useState(false)
   const isEditing = Boolean(props.account)
+  const credentialUpdates = Object.fromEntries(
+    Object.entries(credentials).filter(([, value]) => value.trim().length > 0),
+  )
+  const hasCredentialUpdates = Object.keys(credentialUpdates).length > 0
+  const validationRequired = !isEditing || hasCredentialUpdates
+  const canSubmit = name.trim().length > 0
+    && !props.busy
+    && !validating
+    && (!validationRequired || validation?.healthy)
+
+  const setCredential = (field: string, value: string) => {
+    setCredentials((current) => ({ ...current, [field]: value }))
+    if (value.trim()) setProviderOpened(true)
+    setValidation(null)
+    setValidationError(null)
+  }
+
+  const validateCredentials = async () => {
+    const requiredMissing = props.provider.credentialFields
+      .filter((field) => field.required)
+      .some((field) => !credentialUpdates[field.name]?.trim())
+    if (requiredMissing) {
+      setValidation(null)
+      setValidationError('Devam etmek için oturum tokenını girin.')
+      return
+    }
+
+    setValidating(true)
+    setValidation(null)
+    setValidationError(null)
+    try {
+      const result = await validateAccountCredentials({
+        providerId: props.provider.id,
+        credentials: credentialUpdates,
+      })
+      setValidation(result)
+    } catch (cause) {
+      setValidationError(cause instanceof Error ? cause.message : 'Bağlantı doğrulanamadı.')
+    } finally {
+      setValidating(false)
+    }
+  }
 
   return (
     <Modal
       title={isEditing ? 'DeepSeek hesabını düzenle' : 'DeepSeek hesabı ekle'}
-      subtitle={isEditing ? 'Şifreli değerler gösterilmez; yalnız değiştirmek istediğiniz credential alanını doldurun.' : 'Oturum bilgisi kaydedildiğinde AES-256-GCM ile şifrelenir.'}
+      subtitle={isEditing
+        ? 'Şifreli değerler gösterilmez. Token değişikliği kaydedilmeden önce yeniden doğrulanır.'
+        : 'DeepSeek oturumunu doğrulayın; geçersiz token hiçbir zaman kaydedilmez.'}
       onClose={props.onClose}
       drawer
     >
       <form className="drawer-form" onSubmit={(event) => {
         event.preventDefault()
-        const credentialUpdates = Object.fromEntries(
-          Object.entries(credentials).filter(([, value]) => value.trim().length > 0),
-        )
+        if (!canSubmit) return
         void props.onSubmit({
           providerId: props.provider.id,
           name,
@@ -1422,8 +1544,122 @@ function AccountPanel(props: {
           dailyLimit: dailyLimit ? Number(dailyLimit) : isEditing ? null : undefined,
         })
       }}>
+        {!isEditing && (
+          <div className="onboarding-progress" aria-label="Hesap bağlantı adımları">
+            <span className={providerOpened ? 'complete' : ''}><i>{providerOpened ? <Check size={13} /> : '1'}</i><strong>DeepSeek girişi</strong></span>
+            <span className={hasCredentialUpdates ? 'complete' : ''}><i>{hasCredentialUpdates ? <Check size={13} /> : '2'}</i><strong>Oturum tokenı</strong></span>
+            <span className={validation?.healthy ? 'complete' : ''}><i>{validation?.healthy ? <Check size={13} /> : '3'}</i><strong>Doğrulama</strong></span>
+          </div>
+        )}
+        {!isEditing && (
+          <div className="provider-login-card">
+            <div className="provider-login-icon"><ExternalLink size={20} /></div>
+            <div>
+              <strong>DeepSeek hesabınızda oturum açın</strong>
+              <p>Giriş yalnız DeepSeek’in kendi sayfasında tamamlanır. E-posta veya parolanız bu uygulamaya girilmez.</p>
+            </div>
+            <a
+              className="secondary-button compact"
+              href="https://chat.deepseek.com/"
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={() => setProviderOpened(true)}
+            >
+              DeepSeek’i aç <ExternalLink size={14} />
+            </a>
+          </div>
+        )}
         <div className="form-section">
-          <div className="form-section-head"><span>01</span><div><strong>Hesap kimliği</strong><small>Yalnız panelde görünen operasyon etiketi</small></div></div>
+          <div className="form-section-head"><span>{isEditing ? '01' : '02'}</span><div><strong>Web oturumu</strong><small>Token yalnız şifreli kasaya kaydedilir ve tekrar gösterilmez</small></div></div>
+          <div className="credential-box">
+            <div><LockKeyhole size={16} /><span>AES-256-GCM encrypted storage</span></div>
+            {props.provider.credentialFields.map((field) => (
+              <Field key={field.name} label={`${field.label}${field.required ? ' *' : ''}`} hint={field.helpText}>
+                {field.type === 'textarea' ? (
+                  <textarea
+                    value={credentials[field.name] ?? ''}
+                    onChange={(event) => setCredential(field.name, event.target.value)}
+                    required={!isEditing && field.required}
+                    rows={5}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder={field.placeholder}
+                  />
+                ) : (
+                  <div className="secret-input">
+                    <input
+                      type={field.type === 'password' && showCredential ? 'text' : field.type}
+                      value={credentials[field.name] ?? ''}
+                      onChange={(event) => setCredential(field.name, event.target.value)}
+                      required={!isEditing && field.required}
+                      autoComplete="off"
+                      placeholder={field.placeholder}
+                    />
+                    {field.type === 'password' && (
+                      <button
+                        type="button"
+                        onClick={() => setShowCredential((visible) => !visible)}
+                        aria-label={showCredential ? 'Tokenı gizle' : 'Tokenı göster'}
+                      >
+                        {showCredential ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </Field>
+            ))}
+            <details className="onboarding-help">
+              <summary>Oturum tokenını nasıl bulurum?</summary>
+              <ol>
+                <li>DeepSeek sekmesinde hesabınıza giriş yapın.</li>
+                <li>Tarayıcı geliştirici araçlarında Network panelini açıp sayfayı yenileyin.</li>
+                <li><code>users/current</code> isteğinin Request Headers bölümündeki <code>Authorization</code> değerini kopyalayın.</li>
+                <li><code>Bearer</code> ön ekiyle birlikte veya yalnız token değerini bu alana yapıştırabilirsiniz.</li>
+              </ol>
+              <p>Yalnız size ait ve bu gateway için ayrılmış bir hesabı kullanın. Parola, cookie dosyası veya HAR yüklemeyin.</p>
+            </details>
+          </div>
+        </div>
+        <div className="form-section">
+          <div className="form-section-head"><span>{isEditing ? '02' : '03'}</span><div><strong>Doğrulama ve hesap ayarları</strong><small>Bağlantıyı sınayın, ardından operasyon etiketini belirleyin</small></div></div>
+          <div className="connection-check">
+            <div>
+              <span className={`connection-check-icon ${validation?.healthy ? 'success' : validationError ? 'danger' : ''}`}>
+                {validating
+                  ? <RefreshCw size={17} className="spin" />
+                  : validation?.healthy
+                  ? <Check size={17} />
+                  : <Activity size={17} />}
+              </span>
+              <div>
+                <strong>{validation?.healthy
+                  ? 'Oturum doğrulandı'
+                  : validationError
+                  ? 'Bağlantı doğrulanamadı'
+                  : hasCredentialUpdates
+                  ? 'Doğrulamaya hazır'
+                  : isEditing
+                  ? 'Mevcut token korunacak'
+                  : 'Token bekleniyor'}</strong>
+                <small>{validation?.healthy
+                  ? `${validation.message} · ${validation.latencyMs} ms`
+                  : validationError
+                  ?? (isEditing && !hasCredentialUpdates
+                    ? 'Tokenı değiştirmiyorsanız yeniden doğrulama gerekmez.'
+                    : 'Kayıttan önce credential-only sağlık kontrolü yapılır.')}</small>
+              </div>
+            </div>
+            {hasCredentialUpdates && (
+              <button
+                type="button"
+                className="secondary-button compact"
+                onClick={() => void validateCredentials()}
+                disabled={validating}
+              >
+                {validating ? 'Kontrol ediliyor' : validation?.healthy ? 'Tekrar doğrula' : 'Bağlantıyı doğrula'}
+              </button>
+            )}
+          </div>
           <Field label="Hesap etiketi">
             <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Örn. Ana DeepSeek hesabı" />
           </Field>
@@ -1436,40 +1672,10 @@ function AccountPanel(props: {
             </Field>
           </div>
         </div>
-        <div className="form-section">
-          <div className="form-section-head"><span>02</span><div><strong>Web oturumu</strong><small>Kaydedildikten sonra tekrar görüntülenmez</small></div></div>
-          <div className="credential-box">
-            <div><LockKeyhole size={16} /><span>AES-256-GCM encrypted storage</span></div>
-            {props.provider.credentialFields.map((field) => (
-              <Field key={field.name} label={`${field.label}${field.required ? ' *' : ''}`} hint={field.helpText}>
-                {field.type === 'textarea' ? (
-                  <textarea
-                    value={credentials[field.name] ?? ''}
-                    onChange={(event) => setCredentials({ ...credentials, [field.name]: event.target.value })}
-                    required={!isEditing && field.required}
-                    rows={5}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder={field.placeholder}
-                  />
-                ) : (
-                  <input
-                    type={field.type}
-                    value={credentials[field.name] ?? ''}
-                    onChange={(event) => setCredentials({ ...credentials, [field.name]: event.target.value })}
-                    required={!isEditing && field.required}
-                    autoComplete="off"
-                    placeholder={field.placeholder}
-                  />
-                )}
-              </Field>
-            ))}
-          </div>
-        </div>
         <div className="modal-actions">
           <button type="button" className="secondary-button" onClick={props.onClose}>Vazgeç</button>
-          <button className="primary-button" disabled={props.busy}>
-            {props.busy ? <><RefreshCw size={16} className="spin" /> Kaydediliyor</> : isEditing ? 'Değişiklikleri kaydet' : 'Hesabı şifreleyip ekle'}
+          <button className="primary-button" disabled={!canSubmit}>
+            {props.busy ? <><RefreshCw size={16} className="spin" /> Kaydediliyor</> : isEditing ? 'Değişiklikleri kaydet' : 'Doğrulanmış hesabı ekle'}
           </button>
         </div>
       </form>
@@ -2094,26 +2300,57 @@ function deriveGatewayState(data: DashboardData | null) {
       actionLabel: 'Hesapları aç',
     }
   }
-  if (data.overview.accounts.attention > 0 || data.overview.gateway.openCircuits.length > 0) {
+  const readiness = data.overview.gateway.readiness
+  if (readiness.reasonCode === 'no_active_account') {
+    return {
+      tone: 'warning' as const,
+      shortLabel: 'Hesap kapalı',
+      label: 'Aktif hesap gerekli',
+      headline: 'DeepSeek hesabı etkinleştirilmeden trafik alınamaz.',
+      description: 'Mevcut hesabı etkinleştirin veya yeni bir oturumu doğrulayarak ekleyin.',
+      actionView: 'providers' as View,
+      actionLabel: 'Hesapları aç',
+    }
+  }
+  if (readiness.reasonCode === 'provider_rate_limited') {
+    return {
+      tone: 'warning' as const,
+      shortLabel: 'Trafik kısıtlı',
+      label: 'DeepSeek hız sınırı',
+      headline: 'DeepSeek yeni istekleri geçici olarak sınırlıyor.',
+      description: readiness.retryAt
+        ? `Credential geçerli; trafik devre kesici tarafından korunuyor. Yeniden deneme ${formatRelativeTime(readiness.retryAt)} mümkün olacak.`
+        : 'Credential geçerli; gerçek üretim çağrıları geçici olarak sınırlandırılıyor. Aktivite kayıtlarından sağlayıcı durumunu izleyin.',
+      actionView: 'activity' as View,
+      actionLabel: 'Aktiviteyi incele',
+    }
+  }
+  if (readiness.status === 'blocked' || readiness.status === 'degraded') {
     return {
       tone: 'danger' as const,
       shortLabel: 'Dikkat gerekli',
       label: 'Operasyon uyarısı',
-      headline: 'Bir hesap veya devre kontrol bekliyor.',
-      description: 'İstemci trafiği etkilenmeden önce hesap sağlığını ve devre kesici durumunu inceleyin.',
+      headline: readinessHeadline(readiness.reasonCode),
+      description: readinessDescription(readiness.reasonCode),
       actionView: 'providers' as View,
       actionLabel: 'Sorunu incele',
     }
   }
-  if (!data.accounts.some((account) => account.health?.healthy)) {
+  if (readiness.status === 'needs_check') {
     return {
       tone: 'warning' as const,
       shortLabel: 'Kontrol bekliyor',
-      label: 'Credential doğrulaması',
-      headline: 'Gateway hazır; hesap sağlığını doğrulayın.',
-      description: 'Aktif oturum mevcut ancak son credential sağlık kontrolü henüz tamamlanmamış.',
-      actionView: 'providers' as View,
-      actionLabel: 'Bağlantıyı test et',
+      label: readiness.reasonCode === 'no_successful_request'
+        ? 'Trafik doğrulaması'
+        : 'Credential doğrulaması',
+      headline: readiness.reasonCode === 'no_successful_request'
+        ? 'Oturum geçerli; ilk gerçek gateway isteği bekleniyor.'
+        : 'Gateway hazır; hesap sağlığını doğrulayın.',
+      description: readiness.reasonCode === 'no_successful_request'
+        ? 'Sağlık kontrolü yalnız oturumu doğrular. Operasyonel hazır durumu için istemci anahtarıyla başarılı bir metin isteği tamamlayın.'
+        : 'Aktif oturum mevcut ancak son credential sağlık kontrolü henüz tamamlanmamış.',
+      actionView: readiness.reasonCode === 'no_successful_request' ? 'keys' as View : 'providers' as View,
+      actionLabel: readiness.reasonCode === 'no_successful_request' ? 'Bağlantıyı kur' : 'Bağlantıyı test et',
     }
   }
   return {
@@ -2125,6 +2362,43 @@ function deriveGatewayState(data: DashboardData | null) {
     actionView: 'activity' as View,
     actionLabel: 'Canlı aktivite',
   }
+}
+
+function readinessReasonLabel(reason: DashboardData['overview']['gateway']['readiness']['reasonCode']): string {
+  const labels = {
+    ready: 'Gerçek trafik doğrulandı',
+    no_active_account: 'Aktif DeepSeek hesabı gerekli',
+    credential_check_required: 'Credential kontrolü gerekli',
+    no_successful_request: 'İlk başarılı istek bekleniyor',
+    provider_rate_limited: 'DeepSeek istekleri geçici olarak sınırlıyor',
+    provider_authentication_failed: 'Oturum tokenı geçersiz veya süresi dolmuş',
+    provider_unavailable: 'DeepSeek erişilemiyor',
+    provider_timeout: 'DeepSeek yanıt süresi aşıldı',
+    provider_protocol_changed: 'DeepSeek web protokolü kontrol edilmeli',
+    no_available_account: 'Kullanılabilir hesap bulunamadı',
+  } satisfies Record<DashboardData['overview']['gateway']['readiness']['reasonCode'], string>
+  return labels[reason]
+}
+
+function readinessHeadline(reason: DashboardData['overview']['gateway']['readiness']['reasonCode']): string {
+  if (reason === 'provider_authentication_failed') return 'DeepSeek oturumu yeniden bağlanmalı.'
+  if (reason === 'provider_protocol_changed') return 'DeepSeek web bağlantısı teknik kontrol bekliyor.'
+  if (reason === 'provider_timeout') return 'DeepSeek yanıt süresi operasyon sınırını aştı.'
+  if (reason === 'no_available_account') return 'Trafiği karşılayacak kullanılabilir hesap yok.'
+  return 'DeepSeek bağlantısı geçici olarak kullanılamıyor.'
+}
+
+function readinessDescription(reason: DashboardData['overview']['gateway']['readiness']['reasonCode']): string {
+  if (reason === 'provider_authentication_failed') {
+    return 'Şifreli oturum tokenını güncelleyin ve kaydetmeden önce bağlantı doğrulamasını tamamlayın.'
+  }
+  if (reason === 'provider_protocol_changed') {
+    return 'Credential sağlıklı görünse bile gerçek istek başarısız oldu. Provider adaptörünü ve son aktivite kodunu inceleyin.'
+  }
+  if (reason === 'no_available_account') {
+    return 'Hesap durumu, günlük kota ve devre kesici bilgilerini birlikte kontrol edin.'
+  }
+  return readinessReasonLabel(reason)
 }
 
 function getNavigationBadge(view: View, data: DashboardData | null): { value: string; tone: string } | null {
@@ -2180,6 +2454,7 @@ function auditActionLabel(action: string): string {
     'account.update': 'Provider hesabı güncellendi',
     'account.delete': 'Provider hesabı silindi',
     'account.health_check': 'Credential sağlık kontrolü',
+    'account.credentials.validate': 'Kaydetmeden önce credential doğrulaması',
     'api_key.create': 'API anahtarı oluşturuldu',
     'api_key.rotate': 'API anahtarı döndürüldü',
     'api_key.update': 'API anahtarı güncellendi',

@@ -18,8 +18,31 @@ export interface Overview {
     active: number
     limit: number
     accountConcurrency: Array<{ accountId: string; active: number }>
-    openCircuits: Array<{ accountId: string; openedUntil: number }>
+    openCircuits: Array<{ accountId: string; failures: number; openedUntil: number }>
+    readiness: OperationalReadiness
   }
+}
+
+export interface OperationalReadiness {
+  status: 'operational' | 'degraded' | 'blocked' | 'needs_check'
+  reasonCode:
+    | 'ready'
+    | 'no_active_account'
+    | 'credential_check_required'
+    | 'no_successful_request'
+    | 'provider_rate_limited'
+    | 'provider_authentication_failed'
+    | 'provider_unavailable'
+    | 'provider_timeout'
+    | 'provider_protocol_changed'
+    | 'no_available_account'
+  activeAccountCount: number
+  healthyAccountCount: number
+  openCircuitCount: number
+  latestSuccessAt?: number
+  latestProviderErrorAt?: number
+  latestProviderErrorCode?: string
+  retryAt?: number
 }
 
 export interface CredentialField {
@@ -81,6 +104,7 @@ export interface ApiKeyRecord {
   enabled: boolean
   managedByEnvironment: boolean
   usageCount: number
+  todayUsed: number
   createdAt: number
   lastUsedAt?: number
   expiresAt?: number

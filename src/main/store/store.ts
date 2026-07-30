@@ -59,7 +59,11 @@ export interface CreateApiKeyInput {
 
 export interface CreatedApiKey {
   rawKey: string
-  record: Omit<StoredApiKey, 'keyHash'>
+  record: PublicApiKey
+}
+
+export interface PublicApiKey extends Omit<StoredApiKey, 'keyHash'> {
+  todayUsed: number
 }
 
 export interface SafeRequestLog {
@@ -486,7 +490,7 @@ export class StoreManager {
     }
   }
 
-  getApiKeys(): Array<Omit<StoredApiKey, 'keyHash'>> {
+  getApiKeys(): PublicApiKey[] {
     const rows = this.requireConnection()
       .prepare('SELECT * FROM api_keys ORDER BY created_at DESC')
       .all() as ApiKeyRow[]
@@ -511,7 +515,7 @@ export class StoreManager {
     return row ? this.apiKeyFromRow(row) : undefined
   }
 
-  getPublicApiKeyById(id: string): Omit<StoredApiKey, 'keyHash'> | undefined {
+  getPublicApiKeyById(id: string): PublicApiKey | undefined {
     const record = this.getApiKeyById(id)
     return record ? this.publicApiKey(record) : undefined
   }
@@ -1040,9 +1044,17 @@ export class StoreManager {
     }
   }
 
-  private publicApiKey(record: StoredApiKey): Omit<StoredApiKey, 'keyHash'> {
+  private publicApiKey(record: StoredApiKey): PublicApiKey {
     const { keyHash: _keyHash, ...publicRecord } = record
-    return publicRecord
+    const usage = this.requireConnection().prepare(`
+      SELECT request_count
+      FROM api_key_daily_usage
+      WHERE api_key_id = ? AND usage_date = ?
+    `).get(record.id, this.currentDate()) as { request_count: number } | undefined
+    return {
+      ...publicRecord,
+      todayUsed: usage?.request_count ?? 0,
+    }
   }
 
   private requestLogFromRow(row: RequestLogRow): SafeRequestLog {

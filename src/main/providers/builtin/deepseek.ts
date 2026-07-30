@@ -11,11 +11,11 @@ export const deepseekConfig: BuiltinProviderConfig = {
   credentialFields: [
     {
       name: 'token',
-      label: 'User Token',
+      label: 'Web oturum tokenı',
       type: 'password',
       required: true,
-      placeholder: 'DeepSeek web oturum tokenı',
-      helpText: 'Yalnız bu gateway için ayrılmış, yetkili bir DeepSeek web hesabının oturum tokenını kullanın.',
+      placeholder: 'Bearer ... veya yalnız token değeri',
+      helpText: 'Yalnız bu gateway için ayrılmış ve size ait yetkili bir DeepSeek hesabının tokenını kullanın.',
     },
   ],
 }

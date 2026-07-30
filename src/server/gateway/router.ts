@@ -178,7 +178,7 @@ export class ProviderRoutingEngine {
 
   getState(): {
     accountConcurrency: Array<{ accountId: string; active: number }>
-    openCircuits: Array<{ accountId: string; openedUntil: number }>
+    openCircuits: Array<{ accountId: string; failures: number; openedUntil: number }>
   } {
     const now = Date.now()
     return {
@@ -186,7 +186,11 @@ export class ProviderRoutingEngine {
         .map(([accountId, active]) => ({ accountId, active })),
       openCircuits: [...this.circuits.entries()]
         .filter(([, state]) => state.openedUntil > now)
-        .map(([accountId, state]) => ({ accountId, openedUntil: state.openedUntil })),
+        .map(([accountId, state]) => ({
+          accountId,
+          failures: state.failures,
+          openedUntil: state.openedUntil,
+        })),
     }
   }
 

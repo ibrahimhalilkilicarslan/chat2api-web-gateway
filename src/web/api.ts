@@ -112,6 +112,16 @@ export function createAccount(input: {
   })
 }
 
+export function validateAccountCredentials(input: {
+  providerId: string
+  credentials: Record<string, string>
+}): Promise<AccountHealthResult> {
+  return request('/admin/api/accounts/validate-credentials', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 export function updateAccount(
   id: string,
   input: Partial<Pick<Account, 'name' | 'email' | 'status'>>

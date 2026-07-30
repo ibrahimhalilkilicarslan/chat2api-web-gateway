@@ -6,9 +6,11 @@ import { BUILTIN_PROVIDERS, type Account } from '../../main/store/types.js'
 import { storeManager, type ApiScope } from '../../main/store/store.js'
 import type { ConcurrencyGate } from '../gateway/concurrency.js'
 import type { ProviderRoutingEngine } from '../gateway/router.js'
+import { deriveOperationalReadiness } from '../operations/readiness.js'
 import {
   checkProviderAccount,
   type AccountHealthChecker,
+  type AccountHealthResult,
 } from '../providers/account-health.js'
 import { accountHealthRegistry } from '../providers/account-health-registry.js'
 import type { AdminAuth } from '../security/admin-auth.js'
@@ -29,6 +31,11 @@ const accountCreateSchema = z.object({
   email: z.string().trim().email().max(254).optional().or(z.literal('')),
   credentials: providerCredentialSchema,
   dailyLimit: z.number().int().min(1).max(1_000_000).optional(),
+}).strict()
+
+const accountCredentialValidationSchema = z.object({
+  providerId: z.literal('deepseek'),
+  credentials: providerCredentialSchema,
 }).strict()
 
 const accountUpdateSchema = z.object({
@@ -144,6 +151,35 @@ function validateCredentialFields(
   return undefined
 }
 
+function normalizeProviderCredentials(
+  providerId: string,
+  credentials: Record<string, string>,
+): Record<string, string> {
+  if (providerId !== 'deepseek') return credentials
+  return {
+    ...credentials,
+    token: credentials.token?.trim().replace(/^Bearer\s+/i, '') ?? '',
+  }
+}
+
+function ephemeralAccount(
+  providerId: string,
+  credentials: Record<string, string>,
+): Account {
+  const now = Date.now()
+  return {
+    id: storeManager.generateId(),
+    providerId,
+    name: 'Credential preflight',
+    credentials,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    requestCount: 0,
+    todayUsed: 0,
+  }
+}
+
 export async function registerAdminRoutes(
   app: FastifyInstance,
   config: RuntimeConfig,
@@ -209,6 +245,16 @@ export async function registerAdminRoutes(
     const statistics = storeManager.getStatistics()
     const today = storeManager.getTodayStatistics()
     const operational = storeManager.getOperationalMetrics()
+    const routingState = routing.getState()
+    const readiness = deriveOperationalReadiness({
+      accounts: accounts.map((account) => ({
+        id: account.id,
+        status: account.status,
+        health: accountHealthRegistry.get(account.id),
+      })),
+      openCircuits: routingState.openCircuits,
+      requestLogs: storeManager.listRequestLogs(100),
+    })
     const successRate = statistics.totalRequests > 0
       ? statistics.successRequests / statistics.totalRequests
       : 1
@@ -240,7 +286,8 @@ export async function registerAdminRoutes(
       gateway: {
         active: concurrency.getActive(),
         limit: concurrency.getLimit(),
-        ...routing.getState(),
+        ...routingState,
+        readiness,
       },
     })
   })
@@ -278,6 +325,49 @@ export async function registerAdminRoutes(
         .getAccounts(false)
         .map((account) => safeAccount(account, cooldowns.get(account.id))),
     )
+  })
+
+  app.post('/admin/api/accounts/validate-credentials', {
+    preHandler: adminAuth.requireMutation,
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
+    const parsed = accountCredentialValidationSchema.safeParse(request.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ error: { code: 'invalid_request', message: 'Invalid credential details.' } })
+    }
+    for (const value of Object.values(parsed.data.credentials)) registerSecret(value)
+    const credentials = normalizeProviderCredentials(parsed.data.providerId, parsed.data.credentials)
+    const credentialError = validateCredentialFields(parsed.data.providerId, credentials, false)
+    if (credentialError) {
+      return reply.code(400).send({ error: { code: 'invalid_credentials', message: credentialError } })
+    }
+    for (const value of Object.values(credentials)) registerSecret(value)
+
+    const provider = storeManager.getProviderById(parsed.data.providerId)
+    if (!provider) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Provider not found.' } })
+    }
+    const health = await accountHealthChecker(
+      provider,
+      ephemeralAccount(parsed.data.providerId, credentials),
+    )
+    storeManager.addAuditLog({
+      actor: 'admin',
+      action: 'account.credentials.validate',
+      targetType: 'provider',
+      targetId: provider.id,
+      outcome: health.healthy ? 'success' : 'failure',
+      metadata: {
+        providerId: provider.id,
+        healthCode: health.code,
+      },
+    })
+    return reply.code(health.healthy ? 200 : 422).send(health)
   })
 
   app.post('/admin/api/accounts/:id/test', {
@@ -330,16 +420,26 @@ export async function registerAdminRoutes(
     })
   })
 
-  app.post('/admin/api/accounts', { preHandler: adminAuth.requireMutation }, async (request, reply) => {
+  app.post('/admin/api/accounts', {
+    preHandler: adminAuth.requireMutation,
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: '1 minute',
+      },
+    },
+  }, async (request, reply) => {
     const parsed = accountCreateSchema.safeParse(request.body)
     if (!parsed.success) {
       return reply.code(400).send({ error: { code: 'invalid_request', message: 'Invalid account details.' } })
     }
-    const credentialError = validateCredentialFields(parsed.data.providerId, parsed.data.credentials, false)
+    for (const value of Object.values(parsed.data.credentials)) registerSecret(value)
+    const credentials = normalizeProviderCredentials(parsed.data.providerId, parsed.data.credentials)
+    const credentialError = validateCredentialFields(parsed.data.providerId, credentials, false)
     if (credentialError) {
       return reply.code(400).send({ error: { code: 'invalid_credentials', message: credentialError } })
     }
-    for (const value of Object.values(parsed.data.credentials)) registerSecret(value)
+    for (const value of Object.values(credentials)) registerSecret(value)
 
     const now = Date.now()
     const account: Account = {
@@ -347,7 +447,7 @@ export async function registerAdminRoutes(
       providerId: parsed.data.providerId,
       name: parsed.data.name,
       email: parsed.data.email || undefined,
-      credentials: parsed.data.credentials,
+      credentials,
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -355,7 +455,32 @@ export async function registerAdminRoutes(
       dailyLimit: parsed.data.dailyLimit,
       todayUsed: 0,
     }
+    const provider = storeManager.getProviderById(account.providerId)
+    if (!provider) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Provider not found.' } })
+    }
+    const health = await accountHealthChecker(provider, account)
+    if (!health.healthy) {
+      storeManager.addAuditLog({
+        actor: 'admin',
+        action: 'account.create',
+        targetType: 'provider',
+        targetId: provider.id,
+        outcome: 'failure',
+        metadata: {
+          providerId: provider.id,
+          healthCode: health.code,
+        },
+      })
+      return reply.code(422).send({
+        error: {
+          code: 'credential_validation_failed',
+          message: health.message,
+        },
+      })
+    }
     storeManager.addAccount(account)
+    accountHealthRegistry.record(account.id, health)
     storeManager.addAuditLog({
       actor: 'admin',
       action: 'account.create',
@@ -375,18 +500,56 @@ export async function registerAdminRoutes(
     }
     const current = storeManager.getAccountById(id.data)
     if (!current) return reply.code(404).send({ error: { code: 'not_found', message: 'Account not found.' } })
+    let validatedHealth: AccountHealthResult | undefined
+    let credentials = body.data.credentials
     if (body.data.credentials) {
-      const credentialError = validateCredentialFields(current.providerId, body.data.credentials, true)
+      for (const value of Object.values(body.data.credentials)) registerSecret(value)
+      credentials = normalizeProviderCredentials(current.providerId, body.data.credentials)
+      const credentialError = validateCredentialFields(current.providerId, credentials, true)
       if (credentialError) {
         return reply.code(400).send({ error: { code: 'invalid_credentials', message: credentialError } })
       }
-      for (const value of Object.values(body.data.credentials)) registerSecret(value)
+      for (const value of Object.values(credentials)) registerSecret(value)
+      const provider = storeManager.getProviderById(current.providerId)
+      const currentWithCredentials = storeManager.getAccountById(id.data, true)
+      if (!provider || !currentWithCredentials) {
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Provider account not found.' } })
+      }
+      const candidate = {
+        ...currentWithCredentials,
+        credentials: {
+          ...currentWithCredentials.credentials,
+          ...credentials,
+        },
+      }
+      validatedHealth = await accountHealthChecker(provider, candidate)
+      if (!validatedHealth.healthy) {
+        storeManager.addAuditLog({
+          actor: 'admin',
+          action: 'account.update',
+          targetType: 'account',
+          targetId: id.data,
+          outcome: 'failure',
+          metadata: {
+            providerId: current.providerId,
+            healthCode: validatedHealth.code,
+          },
+        })
+        return reply.code(422).send({
+          error: {
+            code: 'credential_validation_failed',
+            message: validatedHealth.message,
+          },
+        })
+      }
     }
     const updated = storeManager.updateAccount(id.data, {
       ...body.data,
+      credentials,
       email: body.data.email || undefined,
       dailyLimit: body.data.dailyLimit ?? undefined,
     })
+    if (validatedHealth) accountHealthRegistry.record(id.data, validatedHealth)
     storeManager.addAuditLog({
       actor: 'admin',
       action: 'account.update',

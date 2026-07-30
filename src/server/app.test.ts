@@ -8,14 +8,25 @@ import type { AccountHealthChecker } from './providers/account-health.js'
 const origin = 'http://gateway.test'
 const bootstrapApiKey = 'bootstrap-api-key-that-is-at-least-thirty-two-characters'
 const adminToken = 'admin-token-that-is-at-least-thirty-two-characters'
-const accountHealthChecker: AccountHealthChecker = async () => ({
-  healthy: true,
-  status: 'healthy',
-  code: 'provider_healthy',
-  message: 'Test provider credential is valid.',
-  checkedAt: Date.now(),
-  latencyMs: 4,
-})
+const accountHealthChecker: AccountHealthChecker = async (_provider, account) => (
+  account.credentials.token?.startsWith('invalid-')
+    ? {
+        healthy: false,
+        status: 'authentication_error',
+        code: 'provider_authentication_failed',
+        message: 'Provider credential is invalid or expired.',
+        checkedAt: Date.now(),
+        latencyMs: 4,
+      }
+    : {
+        healthy: true,
+        status: 'healthy',
+        code: 'provider_healthy',
+        message: 'Test provider credential is valid.',
+        checkedAt: Date.now(),
+        latencyMs: 4,
+      }
+)
 
 const config: RuntimeConfig = {
   nodeEnv: 'test',
@@ -388,5 +399,63 @@ describe('gateway HTTP security contract', () => {
       }),
     ]))
     expect(JSON.stringify(auditLogs)).not.toContain('web-provider-token-that-must-remain-private')
+  })
+
+  it('validates an unsaved credential without persisting or exposing it', async () => {
+    const accountCount = storeManager.getAccounts().length
+    const validated = await app.inject({
+      method: 'POST',
+      url: '/admin/api/accounts/validate-credentials',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        providerId: 'deepseek',
+        credentials: { token: 'Bearer preflight-token-that-must-remain-private' },
+      },
+    })
+    const serialized = JSON.stringify(validated.json())
+
+    expect(validated.statusCode).toBe(200)
+    expect(validated.json()).toMatchObject({
+      healthy: true,
+      code: 'provider_healthy',
+    })
+    expect(storeManager.getAccounts()).toHaveLength(accountCount)
+    expect(serialized).not.toContain('preflight-token-that-must-remain-private')
+    const auditLogs = storeManager.listAuditLogs(20)
+    expect(auditLogs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: 'account.credentials.validate',
+        outcome: 'success',
+        metadata: {
+          providerId: 'deepseek',
+          healthCode: 'provider_healthy',
+        },
+      }),
+    ]))
+    expect(JSON.stringify(auditLogs)).not.toContain('preflight-token-that-must-remain-private')
+  })
+
+  it('rejects an invalid credential before account persistence', async () => {
+    const accountCount = storeManager.getAccounts().length
+    const rejected = await app.inject({
+      method: 'POST',
+      url: '/admin/api/accounts',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        providerId: 'deepseek',
+        name: 'Must not persist',
+        credentials: { token: 'invalid-token-that-must-remain-private' },
+      },
+    })
+
+    expect(rejected.statusCode).toBe(422)
+    expect(rejected.json()).toMatchObject({
+      error: {
+        code: 'credential_validation_failed',
+      },
+    })
+    expect(storeManager.getAccounts()).toHaveLength(accountCount)
+    expect(JSON.stringify(rejected.json())).not.toContain('invalid-token-that-must-remain-private')
+    expect(JSON.stringify(storeManager.listAuditLogs(20))).not.toContain('invalid-token-that-must-remain-private')
   })
 })

@@ -89,14 +89,17 @@ obsolete backups after validating the replacement.
 
 1. Open `/admin/`.
 2. Sign in with the locally retrieved admin token.
-3. Add a dedicated DeepSeek web account.
-4. Run `Bağlantıyı test et`.
+3. Use `DeepSeek’i aç` to sign in on DeepSeek's own page; the gateway never asks
+   for the account password.
+4. Paste only the authorized dedicated account's web session token and complete
+   `Bağlantıyı doğrula`. Invalid credentials are not persisted.
 5. Create a separate API key for each client with the minimum scopes, model
    allowlist, expiry, quota, and stable egress IP/CIDR policy.
 6. Store each raw client key immediately; it is shown once.
 7. Send one non-sensitive JSON request.
 8. Send one non-sensitive streaming request.
-9. Confirm activity metadata contains no prompt or response content.
+9. Confirm the overview reports operational traffic readiness and activity
+   metadata contains no prompt or response content.
 
 ## Coolify
 
