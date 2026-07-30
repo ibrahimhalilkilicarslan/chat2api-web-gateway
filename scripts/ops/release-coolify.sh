@@ -22,7 +22,7 @@ fail() {
   exit 1
 }
 
-for command_name in curl docker git jq pnpm; do
+for command_name in curl docker flock git jq pnpm; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "required command is unavailable: ${command_name}"
 done
 
@@ -36,6 +36,12 @@ fi
 [[ "$(stat -c '%u' "${REMOTE_ENV}")" == "$(id -u)" ]] || fail 'remote client environment owner is invalid'
 [[ "$(stat -c '%a' "${REMOTE_ENV}")" == "600" ]] || fail 'remote client environment must have mode 0600'
 
+install -d -m 0700 "${STATE_DIR}"
+readonly RELEASE_LOCK="${STATE_DIR}/release.lock"
+exec 9>"${RELEASE_LOCK}"
+chmod 0600 "${RELEASE_LOCK}"
+flock -n 9 || fail 'another release is already running'
+
 cd -- "${ROOT}"
 [[ -z "$(git status --porcelain)" ]] || fail 'working tree is not clean'
 git fetch --quiet origin main
@@ -43,7 +49,6 @@ readonly HEAD_SHA="$(git rev-parse HEAD)"
 readonly ORIGIN_MAIN_SHA="$(git rev-parse origin/main)"
 [[ "${HEAD_SHA}" == "${ORIGIN_MAIN_SHA}" ]] || fail 'HEAD is not the commit currently published at origin/main'
 
-install -d -m 0700 "${STATE_DIR}"
 mapfile -t current_containers < <(
   docker ps \
     --filter "label=com.docker.compose.project=${CHAT2API_COMPOSE_PROJECT}" \

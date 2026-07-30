@@ -72,6 +72,7 @@ for every non-loopback host.
 
 It requires a clean commit equal to `origin/main`, runs the complete quality
 gate, immutable local image smoke, verified backup, Coolify deployment, new
-container health, and remote smoke. If deployment fails, select the recorded
-previous deployment/image in Coolify. Restore SQLite only after a proven data
-fault and an isolated restore drill.
+container health, and remote smoke. A host-side file lock rejects overlapping
+release attempts. If deployment fails, select the recorded previous
+deployment/image in Coolify. Restore SQLite only after a proven data fault and
+an isolated restore drill.
