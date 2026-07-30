@@ -37,6 +37,7 @@ import {
 } from 'lucide-react'
 import {
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
   type FormEvent,
@@ -2459,19 +2460,20 @@ function Modal({
   drawer?: boolean
 }) {
   const dialogRef = useRef<HTMLElement>(null)
+  const closeFromEffect = useEffectEvent(onClose)
   useEffect(() => {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     dialogRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape') closeFromEffect()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => {
       document.body.style.overflow = previousOverflow
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [onClose])
+  }, [])
 
   return (
     <div className={`modal-layer ${drawer ? 'drawer-layer' : ''}`} role="presentation" onMouseDown={(event) => {
