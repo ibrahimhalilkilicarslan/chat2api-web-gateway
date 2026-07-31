@@ -24,6 +24,7 @@ COPY sha3_wasm_bg.7b9ca65ddd.wasm ./
 RUN pnpm lint \
   && pnpm typecheck \
   && pnpm test \
+  && pnpm i18n:check \
   && pnpm build \
   && pnpm ops:check \
   && pnpm security:check \

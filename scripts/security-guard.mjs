@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
@@ -6,6 +7,34 @@ const failures = []
 
 function fail(message) {
   failures.push(message)
+}
+
+const prohibitedAgentDirectories = ['.codex', '.claude', '.agents']
+if (existsSync(resolve(root, '.git'))) {
+  const trackedPaths = execFileSync('git', ['ls-files', '-z'], {
+    cwd: root,
+    encoding: 'utf8',
+  }).split('\0').filter(Boolean)
+
+  for (const prohibitedDirectory of prohibitedAgentDirectories) {
+    const prohibitedPrefix = `${prohibitedDirectory}/`
+    const tracked = trackedPaths.find(
+      (path) => path.startsWith(prohibitedPrefix) && existsSync(resolve(root, path)),
+    )
+    if (tracked) fail(`local agent configuration is tracked: ${tracked}`)
+  }
+} else {
+  // Docker build contexts intentionally omit .git, so inspect what was copied.
+  for (const prohibitedDirectory of prohibitedAgentDirectories) {
+    const absolutePath = resolve(root, prohibitedDirectory)
+    if (
+      existsSync(absolutePath)
+      && readdirSync(absolutePath, { recursive: true, withFileTypes: true })
+        .some((entry) => entry.isFile() || entry.isSymbolicLink())
+    ) {
+      fail(`local agent configuration is present in build context: ${prohibitedDirectory}`)
+    }
+  }
 }
 
 const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))

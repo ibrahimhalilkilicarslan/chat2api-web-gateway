@@ -18,6 +18,7 @@ import {
   Gauge,
   KeyRound,
   Layers3,
+  Languages,
   LockKeyhole,
   LogOut,
   Menu,
@@ -72,6 +73,14 @@ import {
   resolveConnectorDownload,
   supportsNativeConnectorLaunch,
 } from './connector'
+import {
+  getIntlLocale,
+  Localized,
+  supportedLocales,
+  t,
+  useI18n,
+  type Locale,
+} from './i18n'
 import type {
   Account,
   AccountHealthResult,
@@ -139,6 +148,7 @@ const navigation: Array<{
 ]
 
 export function App() {
+  const { locale } = useI18n()
   const [authenticated, setAuthenticated] = useState<boolean | null>(null)
   const [sessionExpiresAt, setSessionExpiresAt] = useState<number | undefined>()
   const [data, setData] = useState<DashboardData | null>(null)
@@ -274,7 +284,11 @@ export function App() {
   const gatewayState = deriveGatewayState(data)
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
+    <Localized>
+      <div
+        className={`app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}
+        data-locale={locale}
+      >
       <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
         <div className="brand">
           <div className="brand-mark"><Server size={20} /></div>
@@ -354,6 +368,7 @@ export function App() {
             <h1>{activeNavigation.label}</h1>
           </div>
           <div className="topbar-actions">
+            <LanguageSwitcher compact />
             <button className="command-trigger" onClick={() => setCommandOpen(true)}>
               <Search size={16} />
               <span>Hızlı erişim</span>
@@ -644,7 +659,8 @@ export function App() {
           }}
         />
       )}
-    </div>
+      </div>
+    </Localized>
   )
 }
 
@@ -670,10 +686,12 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
   }
 
   return (
-    <div className="login-page">
+    <Localized>
+      <div className="login-page">
       <div className="login-grid" aria-hidden="true" />
       <div className="login-orb login-orb-one" aria-hidden="true" />
       <div className="login-orb login-orb-two" aria-hidden="true" />
+      <div className="login-language"><LanguageSwitcher /></div>
       <section className="login-story">
         <div className="login-brand">
           <div className="brand-mark large"><Server size={25} /></div>
@@ -734,7 +752,8 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
           Oturum çerezi HttpOnly ve SameSite Strict olarak saklanır.
         </div>
       </section>
-    </div>
+      </div>
+    </Localized>
   )
 }
 
@@ -829,7 +848,8 @@ function OverviewPage({
   ]
 
   return (
-    <>
+    <Localized>
+      <>
       <section className={`hero-panel ${gatewayState.tone}`}>
         <div className="hero-copy">
           <span className={`hero-status ${gatewayState.tone}`}><i /> {gatewayState.label}</span>
@@ -909,7 +929,8 @@ function OverviewPage({
           </section>
         </div>
       </div>
-    </>
+      </>
+    </Localized>
   )
 }
 
@@ -924,7 +945,8 @@ function ProvidersPage(props: {
 }) {
   const firstProvider = props.providers[0]
   return (
-    <>
+    <Localized>
+      <>
       <PageIntro
         eyebrow="Hesap yönetimi"
         title="DeepSeek web oturumlarını yönetin"
@@ -1046,7 +1068,8 @@ function ProvidersPage(props: {
           )
         })}
       </div>
-    </>
+      </>
+    </Localized>
   )
 }
 
@@ -1070,7 +1093,8 @@ function ApiKeysPage(props: {
   })
 
   return (
-    <>
+    <Localized>
+      <>
       <PageIntro
         eyebrow="İstemci erişimi"
         title="İstemci erişimini kontrollü dağıtın"
@@ -1188,7 +1212,8 @@ function ApiKeysPage(props: {
           </div>
         )}
       </section>
-    </>
+      </>
+    </Localized>
   )
 }
 
@@ -1229,7 +1254,8 @@ function ActivityPage({
     : 'Henüz veri yok'
 
   return (
-    <>
+    <Localized>
+      <>
       <PageIntro
         eyebrow="İstek izleme"
         title="İstek sağlığını içerik kaydetmeden izleyin"
@@ -1324,7 +1350,8 @@ function ActivityPage({
           </div>
         )}
       </section>
-    </>
+      </>
+    </Localized>
   )
 }
 
@@ -1363,7 +1390,8 @@ function SecurityPage({
   ]
 
   return (
-    <>
+    <Localized>
+      <>
       <PageIntro
         eyebrow="Güvenlik durumu"
         title="Çalışma sınırları açık ve denetlenebilir"
@@ -1522,7 +1550,8 @@ function SecurityPage({
         <AlertTriangle size={19} />
         <p><strong>Web oturumu sınırı</strong> DeepSeek web protokolü resmi API değildir ve haber vermeden değişebilir. Ayrı bir hesap kullanın, oturum sağlık kontrollerini izleyin ve bu gateway’i kritik tek sağlayıcı olarak konumlandırmayın.</p>
       </div>
-    </>
+      </>
+    </Localized>
   )
 }
 
@@ -1728,7 +1757,8 @@ function AccountPanel(props: {
   }
 
   return (
-    <Modal
+    <Localized>
+      <Modal
       title={isEditing ? 'DeepSeek hesabını düzenle' : 'DeepSeek hesabı ekle'}
       subtitle={isEditing
         ? 'Şifreli değerler gösterilmez. Token değişikliği kaydedilmeden önce yeniden doğrulanır.'
@@ -2026,7 +2056,8 @@ function AccountPanel(props: {
           )}
         </div>
       </form>
-    </Modal>
+      </Modal>
+    </Localized>
   )
 }
 
@@ -2052,7 +2083,8 @@ function ApiKeyPanel(props: {
   const [expiryDays, setExpiryDays] = useState('90')
   const [allowedCidrs, setAllowedCidrs] = useState('')
   return (
-    <Modal title="Yeni API anahtarı" subtitle="İstemciye yalnız ihtiyaç duyduğu kapsamı ve kotayı verin." onClose={props.onClose} drawer>
+    <Localized>
+      <Modal title="Yeni API anahtarı" subtitle="İstemciye yalnız ihtiyaç duyduğu kapsamı ve kotayı verin." onClose={props.onClose} drawer>
       <form className="drawer-form" onSubmit={(event) => {
         event.preventDefault()
         void props.onSubmit({
@@ -2132,7 +2164,8 @@ function ApiKeyPanel(props: {
           </button>
         </div>
       </form>
-    </Modal>
+      </Modal>
+    </Localized>
   )
 }
 
@@ -2146,7 +2179,8 @@ function ApiKeyRotationPanel(props: {
   const [expiryDays, setExpiryDays] = useState('90')
 
   return (
-    <Modal
+    <Localized>
+      <Modal
       title="API anahtarını güvenle döndür"
       subtitle={`${props.record.name} için aynı kota, model ve IP politikalarıyla yeni bir anahtar üretilecek.`}
       onClose={props.onClose}
@@ -2191,7 +2225,8 @@ function ApiKeyRotationPanel(props: {
           </button>
         </div>
       </form>
-    </Modal>
+      </Modal>
+    </Localized>
   )
 }
 
@@ -2216,7 +2251,8 @@ function ApiKeyPolicyPanel(props: {
   const [allowedCidrs, setAllowedCidrs] = useState(props.record.allowedCidrs.join('\n'))
 
   return (
-    <Modal
+    <Localized>
+      <Modal
       title="API anahtarı politikası"
       subtitle={`${props.record.name} için erişim sınırlarını güncelleyin. Raw anahtar bu işlemde okunmaz veya değişmez.`}
       onClose={props.onClose}
@@ -2287,7 +2323,8 @@ function ApiKeyPolicyPanel(props: {
           </button>
         </div>
       </form>
-    </Modal>
+      </Modal>
+    </Localized>
   )
 }
 
@@ -2296,7 +2333,8 @@ function OneTimeKey({ value, onClose }: { value: string; onClose: () => void }) 
   const baseUrl = window.location.origin
   const example = `OPENAI_BASE_URL=${baseUrl}/v1\nOPENAI_API_KEY=<bu-ekrandaki-anahtar>\n\ncurl "${baseUrl}/v1/models" \\\n  -H "Authorization: Bearer $OPENAI_API_KEY"`
   return (
-    <Modal title="API anahtarı oluşturuldu" subtitle="Raw değer yalnız bu ekranda bir kez gösterilir." onClose={onClose} narrow>
+    <Localized>
+      <Modal title="API anahtarı oluşturuldu" subtitle="Raw değer yalnız bu ekranda bir kez gösterilir." onClose={onClose} narrow>
       <div className="success-illustration"><CheckCircle2 size={29} /></div>
       <div className="one-time-key">
         <code>{value}</code>
@@ -2315,7 +2353,8 @@ function OneTimeKey({ value, onClose }: { value: string; onClose: () => void }) 
       </div>
       <div className="risk-note"><AlertTriangle size={18} /><p>Anahtarı secret manager’da saklayın. Kaynak kod, URL veya sohbet mesajına eklemeyin.</p></div>
       <button className="primary-button full modal-final-button" onClick={onClose}>Anahtarı güvenle sakladım</button>
-    </Modal>
+      </Modal>
+    </Localized>
   )
 }
 
@@ -2331,7 +2370,8 @@ function ConfirmDialog({
   onConfirm: () => Promise<void>
 }) {
   return (
-    <Modal title={confirmation.title} subtitle={confirmation.description} onClose={onClose} narrow>
+    <Localized>
+      <Modal title={confirmation.title} subtitle={confirmation.description} onClose={onClose} narrow>
       <div className={`confirm-visual ${confirmation.tone === 'danger' ? 'danger' : ''}`}>
         <AlertTriangle size={25} />
       </div>
@@ -2345,7 +2385,8 @@ function ConfirmDialog({
           {busy ? 'İşleniyor' : confirmation.confirmLabel}
         </button>
       </div>
-    </Modal>
+      </Modal>
+    </Localized>
   )
 }
 
@@ -2370,39 +2411,40 @@ function CommandPalette({
   const actions = [
     ...navigation.map((item) => ({
       id: item.id,
-      label: item.label,
-      description: item.description,
+      label: t(item.label),
+      description: t(item.description),
       icon: item.icon,
       action: () => onNavigate(item.id),
     })),
     {
       id: 'add-account',
-      label: 'DeepSeek hesabı ekle',
-      description: 'Yeni web oturumu kaydet',
+      label: t('DeepSeek hesabı ekle'),
+      description: t('Yeni web oturumu kaydet'),
       icon: Plus,
       action: onAddAccount,
     },
     {
       id: 'create-key',
-      label: 'API anahtarı oluştur',
-      description: 'Yeni istemci erişimi tanımla',
+      label: t('API anahtarı oluştur'),
+      description: t('Yeni istemci erişimi tanımla'),
       icon: KeyRound,
       action: onCreateKey,
     },
     {
       id: 'refresh',
-      label: 'Verileri yenile',
-      description: data ? `${data.activity.length} aktivite kaydı yüklü` : 'Paneli yeniden yükle',
+      label: t('Verileri yenile'),
+      description: t(data ? `${data.activity.length} aktivite kaydı yüklü` : 'Paneli yeniden yükle'),
       icon: RefreshCw,
       action: onRefresh,
     },
   ]
   const filtered = actions.filter((action) => `${action.label} ${action.description}`.toLowerCase().includes(query.toLowerCase()))
   return (
-    <div className="command-layer" onMouseDown={(event) => {
-      if (event.currentTarget === event.target) onClose()
-    }}>
-      <section className="command-palette" role="dialog" aria-modal="true" aria-label="Hızlı erişim">
+    <Localized>
+      <div className="command-layer" onMouseDown={(event) => {
+        if (event.currentTarget === event.target) onClose()
+      }}>
+        <section className="command-palette" role="dialog" aria-modal="true" aria-label="Hızlı erişim">
         <div className="command-search">
           <Search size={18} />
           <input
@@ -2428,8 +2470,9 @@ function CommandPalette({
           {filtered.length === 0 && <div className="command-empty">Eşleşen işlem bulunamadı.</div>}
         </div>
         <footer><Command size={13} /> İlk sonucu açmak için Enter</footer>
-      </section>
-    </div>
+        </section>
+      </div>
+    </Localized>
   )
 }
 
@@ -2443,7 +2486,8 @@ function ActivityTable({
   compact?: boolean
 }) {
   return (
-    <>
+    <Localized>
+      <>
       <div className="responsive-table desktop-record-table">
         <table>
           <thead><tr><th>Durum</th><th>Model / istek</th>{!compact && <th>Hesap</th>}<th>Süre</th><th>Zaman</th></tr></thead>
@@ -2477,20 +2521,44 @@ function ActivityTable({
         ))}
         {records.length === 0 && <div className="empty-state"><Activity size={24} /><strong>Henüz istek kaydı yok</strong></div>}
       </div>
-    </>
+      </>
+    </Localized>
+  )
+}
+
+function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
+  const { locale, setLocale } = useI18n()
+  return (
+    <label className={`language-switcher ${compact ? 'compact' : ''}`}>
+      <Languages size={16} aria-hidden="true" />
+      <span>{t('Dil')}</span>
+      <select
+        value={locale}
+        onChange={(event) => setLocale(event.target.value as Locale)}
+        aria-label={t('Arayüz dili')}
+      >
+        {supportedLocales.map((option) => (
+          <option value={option.code} key={option.code}>
+            {compact ? option.shortLabel : option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
 
 function MobileNavigation({ activeView, onSelect }: { activeView: View; onSelect: (view: View) => void }) {
   return (
-    <nav className="mobile-navigation" aria-label="Mobil yönetim menüsü">
-      {navigation.map((item) => (
-        <button className={activeView === item.id ? 'active' : ''} key={item.id} onClick={() => onSelect(item.id)}>
-          <item.icon size={18} />
-          <span>{item.shortLabel}</span>
-        </button>
-      ))}
-    </nav>
+    <Localized>
+      <nav className="mobile-navigation" aria-label="Mobil yönetim menüsü">
+        {navigation.map((item) => (
+          <button className={activeView === item.id ? 'active' : ''} key={item.id} onClick={() => onSelect(item.id)}>
+            <item.icon size={18} />
+            <span>{item.shortLabel}</span>
+          </button>
+        ))}
+      </nav>
+    </Localized>
   )
 }
 
@@ -2518,28 +2586,34 @@ function MiniBars({ records, offset }: { records: RequestActivity[]; offset: num
 
 function ActivityBars({ records }: { records: RequestActivity[] }) {
   const max = Math.max(...records.map((record) => record.latency), 1)
-  if (records.length === 0) return <div className="activity-bars empty-bars"><span>İstek geldikçe grafik oluşur.</span></div>
+  if (records.length === 0) {
+    return <Localized><div className="activity-bars empty-bars"><span>İstek geldikçe grafik oluşur.</span></div></Localized>
+  }
   return (
-    <div className="activity-bars" aria-label="Son istek gecikme grafiği">
-      {records.map((record) => (
-        <i
-          className={record.status}
-          key={record.id}
-          style={{ height: `${Math.max(8, (record.latency / max) * 100)}%` }}
-          title={`${record.model}: ${formatDuration(record.latency)}`}
-        />
-      ))}
-    </div>
+    <Localized>
+      <div className="activity-bars" aria-label="Son istek gecikme grafiği">
+        {records.map((record) => (
+          <i
+            className={record.status}
+            key={record.id}
+            style={{ height: `${Math.max(8, (record.latency / max) * 100)}%` }}
+            title={`${record.model}: ${formatDuration(record.latency)}`}
+          />
+        ))}
+      </div>
+    </Localized>
   )
 }
 
 function CopyField({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
   return (
-    <div className="copy-field">
-      <span>{label}</span>
-      <div><code>{value}</code><button onClick={() => void navigator.clipboard.writeText(value).then(() => setCopied(true))}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? 'Kopyalandı' : 'Kopyala'}</button></div>
-    </div>
+    <Localized>
+      <div className="copy-field">
+        <span>{label}</span>
+        <div><code>{value}</code><button onClick={() => void navigator.clipboard.writeText(value).then(() => setCopied(true))}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? 'Kopyalandı' : 'Kopyala'}</button></div>
+      </div>
+    </Localized>
   )
 }
 
@@ -2552,7 +2626,7 @@ function SegmentedControl<T extends string>({
   options: Array<{ value: T; label: string }>
   onChange: (value: T) => void
 }) {
-  return <div className="segmented-control">{options.map((option) => <button type="button" className={option.value === value ? 'active' : ''} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>
+  return <Localized><div className="segmented-control">{options.map((option) => <button type="button" className={option.value === value ? 'active' : ''} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}</div></Localized>
 }
 
 function PanelHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
@@ -2595,29 +2669,31 @@ function Modal({
   }, [])
 
   return (
-    <div className={`modal-layer ${drawer ? 'drawer-layer' : ''}`} role="presentation" onMouseDown={(event) => {
-      if (event.currentTarget === event.target) onClose()
-    }}>
-      <section
-        ref={dialogRef}
-        tabIndex={-1}
-        className={`modal ${narrow ? 'narrow' : ''} ${drawer ? 'drawer' : ''}`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="modal-title"
-      >
-        <div className="modal-head">
-          <div><p className="eyebrow">{drawer ? 'Yapılandırma' : 'Güvenli işlem'}</p><h2 id="modal-title">{title}</h2><span>{subtitle}</span></div>
-          <button className="icon-button" onClick={onClose} aria-label="Kapat"><X size={19} /></button>
-        </div>
-        {children}
-      </section>
-    </div>
+    <Localized>
+      <div className={`modal-layer ${drawer ? 'drawer-layer' : ''}`} role="presentation" onMouseDown={(event) => {
+        if (event.currentTarget === event.target) onClose()
+      }}>
+        <section
+          ref={dialogRef}
+          tabIndex={-1}
+          className={`modal ${narrow ? 'narrow' : ''} ${drawer ? 'drawer' : ''}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-title"
+        >
+          <div className="modal-head">
+            <div><p className="eyebrow">{drawer ? 'Yapılandırma' : 'Güvenli işlem'}</p><h2 id="modal-title">{title}</h2><span>{subtitle}</span></div>
+            <button className="icon-button" onClick={onClose} aria-label="Kapat"><X size={19} /></button>
+          </div>
+          {children}
+        </section>
+      </div>
+    </Localized>
   )
 }
 
 function Banner({ tone, children, onClose }: { tone: 'danger' | 'success'; children: ReactNode; onClose: () => void }) {
-  return <div className={`banner ${tone}`}>{tone === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{children}</span><button onClick={onClose} aria-label="Bildirimi kapat"><X size={15} /></button></div>
+  return <Localized><div className={`banner ${tone}`}>{tone === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}<span>{children}</span><button onClick={onClose} aria-label="Bildirimi kapat"><X size={15} /></button></div></Localized>
 }
 
 function StatusBadge({ status, children }: { status: 'success' | 'danger' | 'warning' | 'neutral'; children: ReactNode }) {
@@ -2629,7 +2705,7 @@ function ProviderAvatar({ name }: { name: string }) {
 }
 
 function LoadingScreen() {
-  return <div className="loading-screen"><div className="brand-mark large"><Server size={23} /></div><div className="loading-pulse"><i /><i /><i /></div><span>Gateway hazırlanıyor</span></div>
+  return <Localized><div className="loading-screen"><div className="brand-mark large"><Server size={23} /></div><div className="loading-pulse"><i /><i /><i /></div><span>Gateway hazırlanıyor</span></div></Localized>
 }
 
 function PageSkeleton() {
@@ -2794,7 +2870,7 @@ function accountHealthMessage(health: AccountHealthResult): string {
     unavailable: 'DeepSeek bağlantısına ulaşılamıyor',
     unsupported: 'DeepSeek bağlantı yöntemi değişmiş olabilir',
   }
-  return labels[health.status]
+  return t(labels[health.status])
 }
 
 function activityTone(status: RequestActivity['status']): 'success' | 'danger' | 'warning' {
@@ -2802,7 +2878,7 @@ function activityTone(status: RequestActivity['status']): 'success' | 'danger' |
 }
 
 function activityStatusLabel(status: RequestActivity['status']): string {
-  return status === 'success' ? 'Başarılı' : status === 'pending' ? 'Bekliyor' : 'Hatalı'
+  return t(status === 'success' ? 'Başarılı' : status === 'pending' ? 'Bekliyor' : 'Hatalı')
 }
 
 function activityErrorLabel(code: string): string {
@@ -2815,7 +2891,7 @@ function activityErrorLabel(code: string): string {
     provider_protocol_changed: 'Bağlantı protokolü değişti',
     unknown_error: 'Tanımlanamayan hata',
   }
-  return labels[code] ?? code.replaceAll('_', ' ')
+  return labels[code] ? t(labels[code]) : code.replaceAll('_', ' ')
 }
 
 function auditActionLabel(action: string): string {
@@ -2833,26 +2909,33 @@ function auditActionLabel(action: string): string {
     'api_key.delete': 'API anahtarı silindi',
     'gateway.settings.update': 'Gateway ayarı güncellendi',
   }
-  return labels[action] ?? action
+  return labels[action] ? t(labels[action]) : action
 }
 
 function formatNumber(value: number): string {
-  return new Intl.NumberFormat('tr-TR').format(value)
+  return new Intl.NumberFormat(getIntlLocale()).format(value)
 }
 
 function formatDuration(value: number): string {
-  if (value >= 60_000) return `${(value / 60_000).toFixed(1)} dk`
-  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)} sn`
+  const locale = getIntlLocale()
+  if (value >= 60_000) {
+    return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value / 60_000)
+      + (locale === 'tr-TR' ? ' dk' : locale === 'zh-CN' ? ' 分钟' : ' min')
+  }
+  if (value >= 1000) {
+    return new Intl.NumberFormat(locale, { maximumFractionDigits: value >= 10_000 ? 0 : 1 }).format(value / 1000)
+      + (locale === 'tr-TR' ? ' sn' : locale === 'zh-CN' ? ' 秒' : ' sec')
+  }
   return `${formatNumber(value)} ms`
 }
 
 function formatDate(value?: number): string {
   if (!value) return '—'
-  return new Intl.DateTimeFormat('tr-TR', { dateStyle: 'short', timeStyle: 'short' }).format(value)
+  return new Intl.DateTimeFormat(getIntlLocale(), { dateStyle: 'short', timeStyle: 'short' }).format(value)
 }
 
 function formatAbsoluteDate(value: number): string {
-  return new Intl.DateTimeFormat('tr-TR', { dateStyle: 'medium' }).format(value)
+  return new Intl.DateTimeFormat(getIntlLocale(), { dateStyle: 'medium' }).format(value)
 }
 
 function formatDateTimeLocal(value?: number): string {
@@ -2874,25 +2957,25 @@ function parsePolicyLines(value: string): string[] {
 }
 
 function formatRelativeTime(value?: number): string {
-  if (!value) return 'Henüz yok'
+  if (!value) return t('Henüz yok')
   const difference = value - Date.now()
   const absolute = Math.abs(difference)
-  if (absolute < 60_000) return difference > 0 ? 'birazdan' : 'şimdi'
+  if (absolute < 60_000) return t(difference > 0 ? 'birazdan' : 'şimdi')
   if (absolute < 3_600_000) {
     const minutes = Math.round(difference / 60_000)
-    return new Intl.RelativeTimeFormat('tr', { numeric: 'auto' }).format(minutes, 'minute')
+    return new Intl.RelativeTimeFormat(getIntlLocale(), { numeric: 'auto' }).format(minutes, 'minute')
   }
   if (absolute < 86_400_000) {
     const hours = Math.round(difference / 3_600_000)
-    return new Intl.RelativeTimeFormat('tr', { numeric: 'auto' }).format(hours, 'hour')
+    return new Intl.RelativeTimeFormat(getIntlLocale(), { numeric: 'auto' }).format(hours, 'hour')
   }
   return formatDate(value)
 }
 
 function formatTimeUntil(value: number): string {
   const remaining = Math.max(0, value - Date.now())
-  if (remaining === 0) return 'Süre dolmak üzere'
+  if (remaining === 0) return t('Süre dolmak üzere')
   const hours = Math.floor(remaining / 3_600_000)
   const minutes = Math.floor((remaining % 3_600_000) / 60_000)
-  return `${hours} sa ${minutes} dk kaldı`
+  return t(`${hours} sa ${minutes} dk kaldı`)
 }

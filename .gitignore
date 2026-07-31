@@ -40,8 +40,9 @@ Thumbs.db
 .trae/
 *.swp
 *.swo
-.codex/*
-!.codex/config.toml
+.codex/
+.claude/
+.agents/
 CLAUDE.md
 
 # Environment

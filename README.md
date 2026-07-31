@@ -31,7 +31,8 @@ Chat2API intentionally keeps a narrow product boundary:
 - Isolated DeepSeek web accounts with health-aware routing
 - Hashed, scoped, expiring, CIDR-aware client API keys
 - Metadata-only activity and security audit records
-- A responsive admin console for accounts, quotas, keys, and operations
+- A responsive Turkish, English, and Simplified Chinese admin console for
+  accounts, quotas, keys, and operations
 - A non-root, read-only, capability-free Docker runtime
 
 Electron, bundled browsers, arbitrary providers, official API fallback, remote
@@ -121,6 +122,9 @@ instance to a network.
 5. Sign in directly in the isolated provider window.
 6. Wait for the gateway to validate and encrypt the transferred session.
 7. Run the account health check before creating a client API key.
+
+The interface follows the browser language on first use and keeps the operator's
+Turkish, English, or Simplified Chinese selection locally in that browser.
 
 The connector uses an installed Chromium-based browser with a temporary profile.
 It does not read the default browser profile, capture passwords or OTP values,

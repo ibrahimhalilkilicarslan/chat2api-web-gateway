@@ -28,6 +28,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "security:check": "node scripts/security-guard.mjs",
+    "i18n:check": "node scripts/i18n-guard.mjs",
     "setup:smoke": "node scripts/setup-smoke.mjs",
     "audit:prod": "pnpm audit --prod --audit-level high",
     "backup:sqlite": "node scripts/backup-sqlite.mjs",
@@ -40,7 +41,7 @@
     "smoke:remote": "node scripts/remote-smoke.mjs",
     "smoke:compat": "node scripts/compatibility-smoke.mjs",
     "smoke:load": "node scripts/load-smoke.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm ops:check && pnpm setup:smoke && pnpm security:check && pnpm licenses:check && pnpm audit:prod"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm i18n:check && pnpm build && pnpm ops:check && pnpm setup:smoke && pnpm security:check && pnpm licenses:check && pnpm audit:prod"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
