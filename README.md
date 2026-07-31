@@ -16,6 +16,13 @@ routing, and a responsive operations console.
 > undocumented and may change without notice. Review the provider's terms and
 > use dedicated accounts you are authorized to operate.
 
+> [!WARNING]
+> Automated or high-frequency web-session traffic, particularly from VPS or
+> datacenter IP addresses, may trigger provider restrictions. The project does
+> not include proxy rotation or anti-detection behavior. A credential health
+> check proves session validity only; complete a controlled text request before
+> treating an account as operational.
+
 ![Chat2API operations overview](docs/assets/admin-overview.png)
 
 _All screenshots use synthetic fixture data. No live endpoint, account,

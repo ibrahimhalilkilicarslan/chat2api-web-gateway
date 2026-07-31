@@ -29,10 +29,61 @@ export class DeepSeekProviderError extends Error {
     readonly code: string,
     readonly status: number,
     message: string,
+    readonly retryAfterMs?: number,
   ) {
     super(message)
     this.name = 'DeepSeekProviderError'
   }
+}
+
+export function providerErrorFromJsonResponse(value: string): DeepSeekProviderError | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return undefined
+  }
+
+  const root = record(parsed)
+  const data = record(root?.data)
+  const businessData = record(data?.biz_data) ?? record(root?.biz_data)
+  const businessCode = typeof data?.biz_code === 'number' ? data.biz_code : undefined
+  const businessMessage = safeString(data?.biz_msg).toLowerCase()
+  const isMuted = businessData?.is_muted === true || businessData?.is_muted === 1
+
+  if (businessCode === 5 || isMuted || businessMessage.includes('user is muted')) {
+    const muteUntilSeconds = typeof businessData?.mute_until === 'number'
+      && Number.isFinite(businessData.mute_until)
+      ? businessData.mute_until
+      : undefined
+    const retryAfterMs = muteUntilSeconds === undefined
+      ? undefined
+      : Math.max(1000, Math.round(muteUntilSeconds * 1000 - Date.now()))
+    return new DeepSeekProviderError(
+      'provider_account_suspended',
+      403,
+      'The DeepSeek account is temporarily suspended by the provider.',
+      retryAfterMs,
+    )
+  }
+
+  if (businessCode === 40_003) {
+    return new DeepSeekProviderError(
+      'provider_authentication_failed',
+      401,
+      'The DeepSeek web session is invalid or expired.',
+    )
+  }
+
+  if (businessCode !== undefined && businessCode !== 0) {
+    return new DeepSeekProviderError(
+      'provider_response_error',
+      502,
+      'DeepSeek could not complete the request.',
+    )
+  }
+
+  return undefined
 }
 
 function providerErrorFromChunk(chunk: StreamChunk): DeepSeekProviderError | undefined {
@@ -234,6 +285,7 @@ export class DeepSeekStreamHandler {
     const source = stream as Readable
     const output = new PassThrough()
     let buffer = ''
+    let nonSseBody = ''
 
     source.on('data', (chunk: Buffer | string) => {
       if (this.isDone) return
@@ -242,7 +294,11 @@ export class DeepSeekStreamHandler {
       buffer = lines.pop() ?? ''
 
       for (const line of lines) {
-        if (!line.trim() || !line.startsWith('data:')) continue
+        if (!line.trim()) continue
+        if (!line.startsWith('data:')) {
+          nonSseBody += line
+          continue
+        }
         const data = line.slice(5).trim()
         if (data === '[DONE]') {
           this.finishStream(output)
@@ -263,7 +319,14 @@ export class DeepSeekStreamHandler {
       }
     })
 
-    source.once('end', () => this.finishStream(output))
+    source.once('end', () => {
+      const providerError = providerErrorFromJsonResponse(`${nonSseBody}${buffer}`)
+      if (providerError) {
+        this.failStream(output, providerError)
+        return
+      }
+      this.finishStream(output)
+    })
     source.once('error', (error) => {
       if (!this.isDone) {
         this.isDone = true
@@ -286,12 +349,17 @@ export class DeepSeekStreamHandler {
 
     try {
       let buffer = ''
+      let nonSseBody = ''
       for await (const chunk of stream) {
         buffer += chunk.toString()
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
         for (const line of lines) {
-          if (!line.trim() || !line.startsWith('data:')) continue
+          if (!line.trim()) continue
+          if (!line.startsWith('data:')) {
+            nonSseBody += line
+            continue
+          }
           const data = line.slice(5).trim()
           if (data === '[DONE]') continue
           const parsed = this.parseSse(data)
@@ -304,6 +372,9 @@ export class DeepSeekStreamHandler {
           }
         }
       }
+
+      const jsonError = providerErrorFromJsonResponse(`${nonSseBody}${buffer}`)
+      if (jsonError) throw jsonError
 
       const citations = this.decoder.citations()
       const answer = content.trim()

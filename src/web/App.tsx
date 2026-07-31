@@ -1784,6 +1784,12 @@ function AccountPanel(props: {
             <span className={linkSession?.status === 'complete' || validation?.healthy ? 'complete' : ''}><i>{linkSession?.status === 'complete' || validation?.healthy ? <Check size={13} /> : '3'}</i><strong>Doğrulama</strong></span>
           </div>
         )}
+        {!isEditing && (
+          <div className="risk-note wide">
+            <AlertTriangle size={18} />
+            <p><strong>Veri merkezi ve web otomasyonu riski</strong> DeepSeek web oturumları resmi API değildir. VPS/veri merkezi IP’leri ile otomatik veya yüksek frekanslı kullanım sağlayıcı tarafından sınırlandırılabilir. Proxy rotasyonu ve anti-detection desteklenmez; yalnız yetkili hesapları ve sağlayıcının izin verdiği kullanım biçimini kullanın.</p>
+          </div>
+        )}
         <div className="form-section">
           <div className="form-section-head"><span>01</span><div><strong>Hesap ayarları</strong><small>Bağlantıyı ayırt etmek için operasyon bilgileri</small></div></div>
           <Field label="Hesap etiketi *">
@@ -2725,6 +2731,19 @@ function deriveGatewayState(data: DashboardData | null) {
     }
   }
   const readiness = data.overview.gateway.readiness
+  if (readiness.reasonCode === 'provider_account_suspended') {
+    return {
+      tone: 'danger' as const,
+      shortLabel: 'Hesap askıda',
+      label: 'Sağlayıcı kısıtlaması',
+      headline: 'DeepSeek hesabı geçici olarak askıya alınmış.',
+      description: readiness.retryAt
+        ? `Sağlayıcının belirttiği bekleme süresi ${formatRelativeTime(readiness.retryAt)} dolacak. Bu tarihten önce otomatik deneme göndermeyin.`
+        : 'Sağlayıcı hesabı kullanım dışı bıraktı. DeepSeek web arayüzündeki hesap bildirimini inceleyin.',
+      actionView: 'providers' as View,
+      actionLabel: 'Askıyı incele',
+    }
+  }
   if (readiness.reasonCode === 'no_active_account') {
     return {
       tone: 'warning' as const,
@@ -2795,6 +2814,7 @@ function readinessReasonLabel(reason: DashboardData['overview']['gateway']['read
     credential_check_required: 'Oturum kontrolü gerekli',
     no_successful_request: 'İlk başarılı istek bekleniyor',
     provider_rate_limited: 'DeepSeek istekleri geçici olarak sınırlıyor',
+    provider_account_suspended: 'DeepSeek hesabı sağlayıcı tarafından askıya alındı',
     provider_authentication_failed: 'Oturum tokenı geçersiz veya süresi dolmuş',
     provider_unavailable: 'DeepSeek erişilemiyor',
     provider_timeout: 'DeepSeek yanıt süresi aşıldı',
@@ -2805,6 +2825,7 @@ function readinessReasonLabel(reason: DashboardData['overview']['gateway']['read
 }
 
 function readinessHeadline(reason: DashboardData['overview']['gateway']['readiness']['reasonCode']): string {
+  if (reason === 'provider_account_suspended') return 'DeepSeek hesabı geçici olarak askıya alınmış.'
   if (reason === 'provider_authentication_failed') return 'DeepSeek oturumu yeniden bağlanmalı.'
   if (reason === 'provider_protocol_changed') return 'DeepSeek web bağlantısı teknik kontrol bekliyor.'
   if (reason === 'provider_timeout') return 'DeepSeek yanıt süresi operasyon sınırını aştı.'
@@ -2813,6 +2834,9 @@ function readinessHeadline(reason: DashboardData['overview']['gateway']['readine
 }
 
 function readinessDescription(reason: DashboardData['overview']['gateway']['readiness']['reasonCode']): string {
+  if (reason === 'provider_account_suspended') {
+    return 'Hesap sağlayıcı tarafından geçici olarak kısıtlandı. Askı süresi dolmadan otomatik istek göndermeyin.'
+  }
   if (reason === 'provider_authentication_failed') {
     return 'Şifreli oturum tokenını güncelleyin ve kaydetmeden önce bağlantı doğrulamasını tamamlayın.'
   }
@@ -2847,6 +2871,7 @@ function readViewFromHash(): View {
 }
 
 function accountStatusTone(account: Account): 'success' | 'danger' | 'warning' | 'neutral' {
+  if (account.health?.status === 'suspended') return 'danger'
   if (account.status === 'error' || account.status === 'expired') return 'danger'
   if (account.cooldownUntil || account.health?.status === 'rate_limited') return 'warning'
   if (account.status === 'active' && account.health?.healthy) return 'success'
@@ -2854,6 +2879,7 @@ function accountStatusTone(account: Account): 'success' | 'danger' | 'warning' |
 }
 
 function accountStatusLabel(account: Account): string {
+  if (account.health?.status === 'suspended') return 'Askıda'
   if (account.cooldownUntil) return 'Beklemede'
   if (account.health?.healthy) return account.status === 'active' ? 'Sağlıklı' : 'Duraklatıldı'
   if (account.status === 'error') return 'Hatalı'
@@ -2867,6 +2893,7 @@ function accountHealthMessage(health: AccountHealthResult): string {
     healthy: 'Oturum doğrulandı',
     authentication_error: 'Oturum geçersiz veya süresi dolmuş',
     rate_limited: 'DeepSeek istekleri geçici olarak sınırlıyor',
+    suspended: 'DeepSeek hesabı sağlayıcı tarafından askıya alındı',
     unavailable: 'DeepSeek bağlantısına ulaşılamıyor',
     unsupported: 'DeepSeek bağlantı yöntemi değişmiş olabilir',
   }
@@ -2885,6 +2912,7 @@ function activityErrorLabel(code: string): string {
   const labels: Record<string, string> = {
     no_available_account: 'Kullanılabilir hesap yok',
     provider_rate_limited: 'Sağlayıcı isteği sınırladı',
+    provider_account_suspended: 'Sağlayıcı hesabı askıya aldı',
     provider_authentication_failed: 'Oturum doğrulanamadı',
     provider_unavailable: 'Sağlayıcıya ulaşılamadı',
     provider_timeout: 'Yanıt süresi aşıldı',

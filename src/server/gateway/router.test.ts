@@ -190,4 +190,30 @@ describe('provider routing engine', () => {
     expect(result.retryAfterSeconds).toBeLessThanOrEqual(22)
     expect(engine.getState().openCircuits[0]?.accountId).toBe(account.id)
   })
+
+  it('removes suspended provider accounts from routing and returns a retry hint', async () => {
+    const first = addAccount('first')
+    const second = addAccount('second')
+    const runtime: ProviderRuntimeAdapter = {
+      async forwardChatCompletion() {
+        return {
+          success: false,
+          status: 403,
+          code: 'provider_account_suspended',
+          retryAfterMs: 60_000,
+        }
+      },
+    }
+    const engine = new ProviderRoutingEngine(runtimeConfig, runtime, store)
+    const result = await engine.forward(request, context)
+
+    expect(result).toMatchObject({
+      status: 503,
+      code: 'provider_account_suspended',
+    })
+    if (!('code' in result)) return
+    expect(result.retryAfterSeconds).toBeGreaterThanOrEqual(59)
+    expect(store.getAccountById(first.id)?.status).toBe('error')
+    expect(store.getAccountById(second.id)?.status).toBe('error')
+  })
 })

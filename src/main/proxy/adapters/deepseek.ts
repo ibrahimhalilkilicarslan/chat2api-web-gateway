@@ -267,6 +267,13 @@ export class DeepSeekAdapter {
     }
 
     const inspection = inspectDeepSeekCurrentUser(result.data)
+    if (inspection.kind === 'suspended') {
+      throw new DeepSeekUpstreamError(
+        'provider_account_suspended',
+        403,
+        'The DeepSeek account is temporarily suspended by the provider.',
+      )
+    }
     if (inspection.kind !== 'valid') {
       throw new DeepSeekUpstreamError(
         inspection.kind === 'authentication_error'

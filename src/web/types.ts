@@ -32,6 +32,7 @@ export interface OperationalReadiness {
     | 'credential_check_required'
     | 'no_successful_request'
     | 'provider_rate_limited'
+    | 'provider_account_suspended'
     | 'provider_authentication_failed'
     | 'provider_unavailable'
     | 'provider_timeout'
@@ -69,11 +70,12 @@ export interface Provider {
 
 export interface AccountHealthResult {
   healthy: boolean
-  status: 'healthy' | 'authentication_error' | 'rate_limited' | 'unavailable' | 'unsupported'
+  status: 'healthy' | 'authentication_error' | 'rate_limited' | 'suspended' | 'unavailable' | 'unsupported'
   code: string
   message: string
   checkedAt: number
   latencyMs: number
+  retryAt?: number
 }
 
 export interface Account {

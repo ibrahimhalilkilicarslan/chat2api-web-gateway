@@ -144,6 +144,7 @@ function safeAccount(account: Account, cooldownUntil?: number) {
           message: health.message,
           checkedAt: health.checkedAt,
           latencyMs: health.latencyMs,
+          retryAt: health.retryAt,
         }
       : null,
     cooldownUntil: cooldownUntil && cooldownUntil > Date.now() ? cooldownUntil : null,
@@ -685,7 +686,9 @@ export async function registerAdminRoutes(
     storeManager.updateAccount(account.id, {
       status: health.healthy
         ? account.status === 'inactive' ? 'inactive' : 'active'
-        : health.status === 'authentication_error' ? 'error' : account.status,
+        : health.status === 'authentication_error' || health.status === 'suspended'
+          ? 'error'
+          : account.status,
       errorMessage: health.healthy ? undefined : health.message,
     })
     storeManager.addAuditLog({

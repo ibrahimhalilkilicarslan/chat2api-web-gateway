@@ -68,4 +68,27 @@ describe('account health monitor', () => {
     expect(store.getAccountById(account.id)?.status).toBe('active')
     expect(registry.get(account.id)?.status).toBe('rate_limited')
   })
+
+  it('removes a suspended provider account from active routing', async () => {
+    const registry = new AccountHealthRegistry()
+    await runAccountHealthChecks({
+      store,
+      registry,
+      checker: async () => ({
+        healthy: false,
+        status: 'suspended',
+        code: 'provider_account_suspended',
+        message: 'The provider account is temporarily suspended.',
+        checkedAt: Date.now(),
+        latencyMs: 3,
+        retryAt: Date.now() + 60_000,
+      }),
+    })
+
+    expect(store.getAccountById(account.id)).toMatchObject({
+      status: 'error',
+      errorMessage: 'The provider account is temporarily suspended.',
+    })
+    expect(registry.get(account.id)?.status).toBe('suspended')
+  })
 })

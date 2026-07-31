@@ -790,6 +790,38 @@ export const messageTable: Readonly<Record<string, Translation>> = {
     'Use a token from an authorized DeepSeek account you own and dedicate to this gateway.',
     '请使用您拥有并专用于此网关的已授权 DeepSeek 账户令牌。',
   ],
+  'Veri merkezi ve web otomasyonu riski': [
+    'Datacenter and web automation risk',
+    '数据中心与网页自动化风险',
+  ],
+  'DeepSeek web oturumları resmi API değildir. VPS/veri merkezi IP’leri ile otomatik veya yüksek frekanslı kullanım sağlayıcı tarafından sınırlandırılabilir. Proxy rotasyonu ve anti-detection desteklenmez; yalnız yetkili hesapları ve sağlayıcının izin verdiği kullanım biçimini kullanın.': [
+    'DeepSeek web sessions are not an official API. Automated or high-frequency use from VPS or datacenter IPs may be restricted by the provider. Proxy rotation and anti-detection are not supported; use only authorized accounts and provider-permitted workflows.',
+    'DeepSeek 网页会话并非官方 API。通过 VPS 或数据中心 IP 进行自动化或高频使用可能会受到提供商限制。本项目不支持代理轮换或反检测；请仅使用已授权账户和提供商允许的工作方式。',
+  ],
+  'Hesap askıda': ['Account suspended', '账户已暂停'],
+  'Sağlayıcı kısıtlaması': ['Provider restriction', '提供商限制'],
+  'DeepSeek hesabı geçici olarak askıya alınmış.': [
+    'The DeepSeek account is temporarily suspended.',
+    'DeepSeek 账户已被暂时暂停。',
+  ],
+  'Sağlayıcı hesabı kullanım dışı bıraktı. DeepSeek web arayüzündeki hesap bildirimini inceleyin.': [
+    'The provider disabled the account. Review the account notice in the DeepSeek web interface.',
+    '提供商已停用该账户。请查看 DeepSeek 网页界面中的账户通知。',
+  ],
+  'Askıyı incele': ['Review suspension', '查看暂停状态'],
+  'DeepSeek hesabı sağlayıcı tarafından askıya alındı': [
+    'The DeepSeek account was suspended by the provider',
+    'DeepSeek 账户已被提供商暂停',
+  ],
+  'Hesap sağlayıcı tarafından geçici olarak kısıtlandı. Askı süresi dolmadan otomatik istek göndermeyin.': [
+    'The account was temporarily restricted by the provider. Do not send automated requests before the suspension expires.',
+    '该账户已被提供商暂时限制。暂停期结束前请勿发送自动请求。',
+  ],
+  'Askıda': ['Suspended', '已暂停'],
+  'Sağlayıcı hesabı askıya aldı': [
+    'Provider suspended the account',
+    '提供商已暂停账户',
+  ],
 }
 
 interface DynamicPattern {
@@ -799,6 +831,11 @@ interface DynamicPattern {
 }
 
 const dynamicPatterns: readonly DynamicPattern[] = [
+  {
+    pattern: /^Sağlayıcının belirttiği bekleme süresi (.+) dolacak\. Bu tarihten önce otomatik deneme göndermeyin\.$/,
+    english: (value) => `The provider wait period will end ${value}. Do not send automated checks before then.`,
+    simplifiedChinese: (value) => `提供商规定的等待期将在${value}结束。在此之前请勿发送自动检查。`,
+  },
   {
     pattern: /^Son güncelleme (.+)$/,
     english: (value) => `Last updated ${value}`,

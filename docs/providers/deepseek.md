@@ -39,6 +39,13 @@ DeepSeek can report throttling inside an HTTP `200` SSE response. Non-stream
 requests become HTTP `429`; streams receive a sanitized
 `provider_rate_limited` SSE error. Empty output is treated as an error.
 
+The current-user response can also report `chat.is_muted` with a provider
+supplied `mute_until` timestamp. The gateway records this as
+`provider_account_suspended`, removes the account from active routing, exposes
+only the sanitized status and retry time to the admin console, and allows a
+later health check to restore the account after the provider clears the hold.
+The raw provider payload is never returned or logged.
+
 ## Account onboarding
 
 The recommended flow uses the standalone, cross-platform **Chat2API Session
@@ -104,3 +111,12 @@ against the native endpoint.
 The web protocol is undocumented and may break or trigger account controls.
 Use a dedicated account, review applicable terms, and do not use account pools
 to circumvent limits.
+
+Automated or high-frequency access from VPS and datacenter egress addresses can
+be classified differently from normal browser use and may result in temporary
+or permanent provider restrictions. This gateway does not implement rotating
+proxies, residential egress, browser-fingerprint spoofing, randomized
+"human-like" timing, or other anti-detection behavior. Operators must use only
+accounts they control and workflows the provider permits. A valid session is
+not evidence that generation is permitted; treat a successful controlled text
+request as the operational readiness signal.

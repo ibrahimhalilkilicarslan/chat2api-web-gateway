@@ -73,6 +73,7 @@ export class ProviderRoutingEngine {
     let lastStatus = 502
     let lastCode = 'provider_unavailable'
     let rateLimitRetryAt: number | undefined
+    let suspensionRetryAt: number | undefined
 
     for (const selection of candidates) {
       if (!this.tryReserve(selection.account.id)) continue
@@ -101,6 +102,12 @@ export class ProviderRoutingEngine {
           rateLimitRetryAt = rateLimitRetryAt === undefined
             ? circuit.openedUntil
             : Math.min(rateLimitRetryAt, circuit.openedUntil)
+        }
+        if (lastCode === 'provider_account_suspended' && result.retryAfterMs !== undefined) {
+          const retryAt = Date.now() + result.retryAfterMs
+          suspensionRetryAt = suspensionRetryAt === undefined
+            ? retryAt
+            : Math.min(suspensionRetryAt, retryAt)
         }
         if (lastStatus === 401 || lastStatus === 403) {
           this.store.updateAccount(selection.account.id, {
@@ -166,11 +173,22 @@ export class ProviderRoutingEngine {
       }
     }
 
-    const retryAfterSeconds = lastStatus === 429
-      ? Math.max(1, Math.ceil(((rateLimitRetryAt ?? Date.now() + 60_000) - Date.now()) / 1000))
-      : undefined
+    const retryAt = lastCode === 'provider_account_suspended'
+      ? suspensionRetryAt
+      : lastStatus === 429
+        ? rateLimitRetryAt ?? Date.now() + 60_000
+        : undefined
+    const retryAfterSeconds = retryAt === undefined
+      ? undefined
+      : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000))
     return {
-      status: lastStatus === 429 ? 429 : lastStatus === 504 ? 504 : 502,
+      status: lastCode === 'provider_account_suspended'
+        ? 503
+        : lastStatus === 429
+          ? 429
+          : lastStatus === 504
+            ? 504
+            : 502,
       code: lastCode,
       ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
     }

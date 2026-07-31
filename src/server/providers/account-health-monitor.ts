@@ -47,7 +47,7 @@ export async function runAccountHealthChecks(
       continue
     }
 
-    if (health.status === 'authentication_error') {
+    if (health.status === 'authentication_error' || health.status === 'suspended') {
       store.updateAccount(account.id, {
         status: 'error',
         errorMessage: health.message,

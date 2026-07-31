@@ -274,6 +274,9 @@ function publicErrorMessage(code: string): string {
   if (code === 'provider_rate_limited') {
     return 'DeepSeek is rate limited. Try again later.'
   }
+  if (code === 'provider_account_suspended') {
+    return 'The configured DeepSeek account is temporarily suspended by the provider.'
+  }
   if (code === 'provider_timeout') {
     return 'DeepSeek did not respond in time.'
   }

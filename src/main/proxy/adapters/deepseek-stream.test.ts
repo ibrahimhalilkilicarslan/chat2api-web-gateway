@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   DeepSeekProviderError,
   DeepSeekStreamHandler,
+  providerErrorFromJsonResponse,
 } from './deepseek-stream.ts'
 
 function providerStream(...events: unknown[]): Readable {
@@ -19,6 +20,63 @@ async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
 }
 
 describe('DeepSeekStreamHandler', () => {
+  it('maps a muted JSON envelope to an explicit provider suspension', () => {
+    const error = providerErrorFromJsonResponse(JSON.stringify({
+      code: 0,
+      data: {
+        biz_code: 5,
+        biz_msg: 'user is muted',
+        biz_data: {
+          is_muted: true,
+          mute_until: Date.now() / 1000 + 60,
+        },
+      },
+    }))
+
+    expect(error).toMatchObject<DeepSeekProviderError>({
+      name: 'DeepSeekProviderError',
+      code: 'provider_account_suspended',
+      status: 403,
+      message: 'The DeepSeek account is temporarily suspended by the provider.',
+    })
+    expect(error?.retryAfterMs).toBeGreaterThan(50_000)
+  })
+
+  it('rejects a non-stream JSON suspension instead of reporting empty output', async () => {
+    const handler = new DeepSeekStreamHandler('deepseek-v4-flash')
+    const stream = Readable.from([JSON.stringify({
+      code: 0,
+      data: {
+        biz_code: 5,
+        biz_msg: 'user is muted',
+        biz_data: { is_muted: 1 },
+      },
+    })])
+
+    await expect(handler.handleNonStream(stream)).rejects.toMatchObject({
+      code: 'provider_account_suspended',
+      status: 403,
+    })
+  })
+
+  it('emits a sanitized suspension error for a streaming JSON envelope', async () => {
+    const handler = new DeepSeekStreamHandler('deepseek-v4-flash')
+    const stream = Readable.from([JSON.stringify({
+      code: 0,
+      data: {
+        biz_code: 5,
+        biz_msg: 'user is muted',
+        biz_data: { is_muted: 1, internal_note: 'must-not-leak' },
+      },
+    })])
+    const output = await readStream(handler.handleStream(stream))
+
+    expect(output).toContain('"code":"provider_account_suspended"')
+    expect(output).toContain('data: [DONE]')
+    expect(output).not.toContain('must-not-leak')
+    expect(output).not.toContain('user is muted')
+  })
+
   it('rejects non-stream requests when DeepSeek embeds a rate limit error in HTTP 200', async () => {
     const handler = new DeepSeekStreamHandler('deepseek-v4-flash')
     const stream = providerStream({

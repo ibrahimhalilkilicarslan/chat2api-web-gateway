@@ -10,6 +10,7 @@ export type AccountHealthStatus =
   | 'healthy'
   | 'authentication_error'
   | 'rate_limited'
+  | 'suspended'
   | 'unavailable'
   | 'unsupported'
 
@@ -20,6 +21,7 @@ export interface AccountHealthResult {
   message: string
   checkedAt: number
   latencyMs: number
+  retryAt?: number
 }
 
 type HealthHttpGet = (
@@ -85,6 +87,17 @@ export async function checkProviderAccount(
       if (response.status !== 200) return fromStatus(startedAt, response.status)
       const inspection = inspectDeepSeekCurrentUser(response.data)
       if (inspection.kind === 'authentication_error') return fromStatus(startedAt, 401)
+      if (inspection.kind === 'suspended') {
+        return result(startedAt, {
+          healthy: false,
+          status: 'suspended',
+          code: 'provider_account_suspended',
+          message: 'The DeepSeek account is temporarily suspended by the provider.',
+          ...(inspection.suspendedUntil === undefined
+            ? {}
+            : { retryAt: inspection.suspendedUntil }),
+        })
+      }
       if (inspection.kind !== 'valid') {
         return result(startedAt, {
           healthy: false,

@@ -22,6 +22,7 @@ export const DEEPSEEK_WEB_HEADERS = {
 
 type DeepSeekCurrentUserInspection =
   | { kind: 'valid'; accessToken: string }
+  | { kind: 'suspended'; suspendedUntil?: number }
   | { kind: 'authentication_error' }
   | { kind: 'protocol_error' }
 
@@ -52,6 +53,17 @@ export function inspectDeepSeekCurrentUser(
   const acceptedCodes = (rootCode === undefined || rootCode === 0)
     && (businessCode === undefined || businessCode === 0)
   if (acceptedCodes && typeof accessToken === 'string' && accessToken.length > 0) {
+    const chat = record(businessData?.chat)
+    const isMuted = chat?.is_muted === true || chat?.is_muted === 1
+    if (isMuted) {
+      const muteUntilSeconds = numericCode(chat?.mute_until)
+      return {
+        kind: 'suspended',
+        ...(muteUntilSeconds === undefined
+          ? {}
+          : { suspendedUntil: Math.round(muteUntilSeconds * 1000) }),
+      }
+    }
     return { kind: 'valid', accessToken }
   }
 

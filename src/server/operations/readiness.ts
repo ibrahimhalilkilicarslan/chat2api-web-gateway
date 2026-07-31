@@ -13,6 +13,7 @@ export type OperationalReadinessReason =
   | 'credential_check_required'
   | 'no_successful_request'
   | 'provider_rate_limited'
+  | 'provider_account_suspended'
   | 'provider_authentication_failed'
   | 'provider_unavailable'
   | 'provider_timeout'
@@ -51,6 +52,7 @@ interface ReadinessInput {
 
 const PROVIDER_FAILURE_CODES = new Set<OperationalReadinessReason>([
   'provider_rate_limited',
+  'provider_account_suspended',
   'provider_authentication_failed',
   'provider_unavailable',
   'provider_timeout',
@@ -79,6 +81,9 @@ export function deriveOperationalReadiness(input: ReadinessInput): OperationalRe
       && latestProviderError.timestamp >= now - RECENT_FAILURE_WINDOW_MS
       && (!latestSuccess || latestProviderError.timestamp > latestSuccess.timestamp),
   )
+  const suspendedAccount = input.accounts.find(
+    (account) => account.health?.code === 'provider_account_suspended',
+  )
 
   const base = {
     activeAccountCount: activeAccounts.length,
@@ -97,7 +102,12 @@ export function deriveOperationalReadiness(input: ReadinessInput): OperationalRe
     return {
       ...base,
       status: 'blocked',
-      reasonCode: 'no_active_account',
+      reasonCode: suspendedAccount
+        ? 'provider_account_suspended'
+        : 'no_active_account',
+      ...(suspendedAccount?.health?.retryAt === undefined
+        ? {}
+        : { retryAt: suspendedAccount.health.retryAt }),
     }
   }
 

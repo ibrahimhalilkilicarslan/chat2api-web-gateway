@@ -42,6 +42,31 @@ describe('operational readiness', () => {
     })
   })
 
+  it('reports a provider suspension when every account is held out of routing', () => {
+    expect(deriveOperationalReadiness({
+      accounts: [{
+        id: 'account-1',
+        status: 'error',
+        health: {
+          healthy: false,
+          status: 'suspended',
+          code: 'provider_account_suspended',
+          message: 'Suspended.',
+          checkedAt: now - 1000,
+          latencyMs: 20,
+          retryAt: now + 60_000,
+        },
+      }],
+      openCircuits: [],
+      requestLogs: [],
+      now,
+    })).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'provider_account_suspended',
+      retryAt: now + 60_000,
+    })
+  })
+
   it('requires a credential check before claiming readiness', () => {
     expect(deriveOperationalReadiness({
       accounts: [{ id: 'account-1', status: 'active' }],

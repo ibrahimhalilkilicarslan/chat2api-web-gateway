@@ -6,6 +6,7 @@ import {
 import {
   DeepSeekProviderError,
   DeepSeekStreamHandler,
+  providerErrorFromJsonResponse,
 } from './adapters/deepseek-stream'
 import { parseRetryAfterMs } from './retry-after'
 import type {
@@ -66,6 +67,23 @@ export class RequestForwarder {
         }
       }
 
+      const contentType = String(response.headers?.['content-type'] ?? '').toLowerCase()
+      if (contentType.includes('application/json')) {
+        let body = ''
+        try {
+          body = await readBoundedProviderBody(response.data)
+        } finally {
+          await cleanup()
+        }
+        const providerError = providerErrorFromJsonResponse(body)
+        if (providerError) throw providerError
+        throw new DeepSeekProviderError(
+          'provider_protocol_changed',
+          502,
+          'DeepSeek returned an unexpected JSON response.',
+        )
+      }
+
       const handler = new DeepSeekStreamHandler(
         request.model,
         cleanup,
@@ -94,7 +112,8 @@ export class RequestForwarder {
         success: false,
         status: failure.status,
         code: failure.code,
-        retryAfterMs: failure.status === 429 ? 60_000 : undefined,
+        retryAfterMs: failure.retryAfterMs
+          ?? (failure.status === 429 ? 60_000 : undefined),
         error: failure.message,
         latency: Date.now() - startedAt,
       }
@@ -114,12 +133,16 @@ function normalizeError(error: unknown): {
   code: string
   status: number
   message: string
+  retryAfterMs?: number
 } {
   if (error instanceof DeepSeekUpstreamError || error instanceof DeepSeekProviderError) {
     return {
       code: error.code,
       status: error.status,
       message: error.message,
+      ...(error instanceof DeepSeekProviderError && error.retryAfterMs !== undefined
+        ? { retryAfterMs: error.retryAfterMs }
+        : {}),
     }
   }
   return {
@@ -127,6 +150,24 @@ function normalizeError(error: unknown): {
     status: 502,
     message: 'DeepSeek is currently unavailable.',
   }
+}
+
+async function readBoundedProviderBody(
+  stream: NodeJS.ReadableStream,
+  maximumBytes = 64 * 1024,
+): Promise<string> {
+  let body = ''
+  for await (const chunk of stream) {
+    body += chunk.toString()
+    if (Buffer.byteLength(body) > maximumBytes) {
+      throw new DeepSeekProviderError(
+        'provider_protocol_changed',
+        502,
+        'DeepSeek returned an oversized JSON response.',
+      )
+    }
+  }
+  return body
 }
 
 export const requestForwarder = new RequestForwarder()

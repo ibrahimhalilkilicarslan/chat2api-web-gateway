@@ -89,6 +89,34 @@ describe('provider account health', () => {
     })
   })
 
+  it('reports a provider suspension and its retry time', async () => {
+    const health = await checkProviderAccount(
+      provider('deepseek'),
+      account('deepseek', { token: 'web-session-token' }),
+      async () => ({
+        status: 200,
+        data: {
+          code: 0,
+          data: {
+            biz_code: 0,
+            biz_data: {
+              token: 'short-lived-access-token',
+              chat: { is_muted: 1, mute_until: 1_800_000_000 },
+            },
+          },
+        },
+      }),
+    )
+
+    expect(health).toMatchObject({
+      healthy: false,
+      status: 'suspended',
+      code: 'provider_account_suspended',
+      retryAt: 1_800_000_000_000,
+    })
+    expect(JSON.stringify(health)).not.toContain('short-lived-access-token')
+  })
+
   it('maps provider throttling without exposing an upstream payload', async () => {
     const health = await checkProviderAccount(
       provider('deepseek'),

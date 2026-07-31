@@ -27,6 +27,25 @@ describe('DeepSeek current-user response inspection', () => {
     })).toEqual({ kind: 'authentication_error' })
   })
 
+  it('recognizes a provider suspension without exposing the access token', () => {
+    expect(inspectDeepSeekCurrentUser({
+      code: 0,
+      data: {
+        biz_code: 0,
+        biz_data: {
+          token: 'short-lived-access-token',
+          chat: {
+            is_muted: 1,
+            mute_until: 1_800_000_000.125,
+          },
+        },
+      },
+    })).toEqual({
+      kind: 'suspended',
+      suspendedUntil: 1_800_000_000_125,
+    })
+  })
+
   it('fails closed when the provider response no longer proves access', () => {
     expect(inspectDeepSeekCurrentUser({
       code: 0,
