@@ -55,6 +55,39 @@ describe('provider account health', () => {
     )
   })
 
+  it('derives an opaque stable identity fingerprint without exposing provider identity', async () => {
+    const key = Buffer.alloc(32, 7)
+    const response = async () => ({
+      status: 200,
+      data: {
+        code: 0,
+        data: {
+          biz_code: 0,
+          biz_data: {
+            id: 'private-provider-user-id',
+            token: 'short-lived-access-token',
+          },
+        },
+      },
+    })
+    const first = await checkProviderAccount(
+      provider('deepseek'),
+      account('deepseek', { token: 'first-web-session-token' }),
+      response,
+      key,
+    )
+    const second = await checkProviderAccount(
+      provider('deepseek'),
+      account('deepseek', { token: 'second-web-session-token' }),
+      response,
+      key,
+    )
+
+    expect(first.identityFingerprint).toBeTruthy()
+    expect(second.identityFingerprint).toBe(first.identityFingerprint)
+    expect(JSON.stringify(first)).not.toContain('private-provider-user-id')
+  })
+
   it('maps an authentication error embedded in an HTTP 200 response', async () => {
     const health = await checkProviderAccount(
       provider('deepseek'),

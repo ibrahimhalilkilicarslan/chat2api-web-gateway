@@ -115,6 +115,14 @@ export interface OperationalMetrics {
   hourly: Array<{ hour: number; total: number; success: number; error: number }>
 }
 
+export interface AccountUsageWindow {
+  used: number
+  limit?: number
+  remaining?: number
+  resetAt?: number
+  allowed: boolean
+}
+
 type ProviderRow = {
   id: string
   data_json: string
@@ -693,6 +701,73 @@ export class StoreManager {
     return result.changes > 0
   }
 
+  getAccountUsageWindow(
+    accountId: string,
+    windowMs: number,
+    now = Date.now(),
+  ): AccountUsageWindow {
+    const cutoff = this.usageWindowCutoff(windowMs, now)
+    const row = this.requireConnection().prepare(`
+      SELECT COUNT(*) AS used, MIN(used_at) AS oldest
+      FROM account_usage_events
+      WHERE account_id = ? AND used_at > ?
+    `).get(accountId, cutoff) as { used: number; oldest: number | null }
+    return {
+      used: row.used,
+      allowed: true,
+      ...(row.oldest === null ? {} : { resetAt: row.oldest + windowMs }),
+    }
+  }
+
+  consumeAccountUsageWindow(
+    accountId: string,
+    limit: number | undefined,
+    windowMs: number,
+    now = Date.now(),
+  ): AccountUsageWindow {
+    const normalizedLimit = limit && limit > 0 ? Math.floor(limit) : undefined
+    const cutoff = this.usageWindowCutoff(windowMs, now)
+    return this.requireConnection().transaction(() => {
+      const row = this.requireConnection().prepare(`
+        SELECT COUNT(*) AS used, MIN(used_at) AS oldest
+        FROM account_usage_events
+        WHERE account_id = ? AND used_at > ?
+      `).get(accountId, cutoff) as { used: number; oldest: number | null }
+      const resetAt = row.oldest === null ? undefined : row.oldest + windowMs
+
+      if (normalizedLimit !== undefined && row.used >= normalizedLimit) {
+        return {
+          used: row.used,
+          limit: normalizedLimit,
+          remaining: 0,
+          resetAt,
+          allowed: false,
+        }
+      }
+
+      this.requireConnection().prepare(`
+        INSERT INTO account_usage_events(account_id, used_at) VALUES (?, ?)
+      `).run(accountId, now)
+      // Keep enough history for diagnostics while bounding table growth.
+      this.requireConnection().prepare(`
+        DELETE FROM account_usage_events WHERE account_id = ? AND used_at <= ?
+      `).run(accountId, now - Math.max(windowMs, 24 * 60 * 60_000))
+
+      const used = row.used + 1
+      return {
+        used,
+        ...(normalizedLimit === undefined
+          ? {}
+          : {
+              limit: normalizedLimit,
+              remaining: Math.max(0, normalizedLimit - used),
+            }),
+        resetAt: row.oldest === null ? now + windowMs : resetAt,
+        allowed: true,
+      }
+    })()
+  }
+
   listRequestLogs(limit = 100): SafeRequestLog[] {
     const safeLimit = Math.max(1, Math.min(500, limit))
     const rows = this.requireConnection()
@@ -1094,6 +1169,13 @@ export class StoreManager {
     this.requireConnection()
       .prepare('UPDATE accounts SET today_used = 0, usage_date = ? WHERE usage_date != ?')
       .run(today, today)
+  }
+
+  private usageWindowCutoff(windowMs: number, now: number): number {
+    if (!Number.isFinite(windowMs) || windowMs < 60_000 || windowMs > 24 * 60 * 60_000) {
+      throw new Error('Account usage window must be between 1 minute and 24 hours')
+    }
+    return now - Math.floor(windowMs)
   }
 
   private currentDate(): string {

@@ -1,7 +1,11 @@
 import { pipeline } from 'node:stream'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { ZodError } from 'zod'
-import type { ChatCompletionRequest, ProxyContext } from '../../main/proxy/types.js'
+import type {
+  ChatCompletionRequest,
+  ForwardStreamOutcome,
+  ProxyContext,
+} from '../../main/proxy/types.js'
 import { storeManager } from '../../main/store/store.js'
 import { ConcurrencyGate } from '../gateway/concurrency.js'
 import {
@@ -10,6 +14,7 @@ import {
   type RoutedResult,
 } from '../gateway/router.js'
 import { parseChatRequest } from '../schemas/chat.js'
+import { applyStopSequences, listModelAliases, parseToolCalls, toolNames } from '../schemas/openaiCompat.js'
 import { assertModelAllowed, requireApiScope } from '../security/api-auth.js'
 
 function openAiError(
@@ -35,6 +40,9 @@ function contextFor(
     startTime: Date.now(),
     isStream: chat.stream === true,
     signal,
+    priority: request.headers['x-chat2api-priority'] === 'background'
+      ? 'background'
+      : 'foreground',
   }
 }
 
@@ -74,10 +82,19 @@ export async function registerOpenAiRoutes(
       ? storeManager.getEffectiveModels('deepseek')
       : []
 
+    const realIds = models.map((model) => model.displayName)
+    const realIdSet = new Set(realIds.map((id) => id.toLowerCase()))
+    // Advertise OpenAI-compat aliases only when they resolve to an available model,
+    // so clients can discover drop-in names alongside the native ids.
+    const aliasIds = realIds.length > 0
+      ? listModelAliases()
+        .filter(({ target }) => realIdSet.has(target.toLowerCase()))
+        .map(({ alias }) => alias)
+      : []
+
     return reply.send({
       object: 'list',
-      data: models
-        .map((model) => model.displayName)
+      data: [...new Set([...realIds, ...aliasIds])]
         .sort()
         .map((id) => ({
           id,
@@ -122,16 +139,6 @@ async function executeChat(
     )
   }
 
-  const releaseGlobal = concurrency.tryAcquire()
-  if (!releaseGlobal) {
-    return openAiError(
-      reply,
-      503,
-      'The gateway is at capacity. Try again shortly.',
-      'gateway_at_capacity',
-    )
-  }
-
   const controller = new AbortController()
   let settled = false
   const abort = () => {
@@ -139,6 +146,26 @@ async function executeChat(
   }
   request.raw.once('aborted', abort)
   reply.raw.once('close', abort)
+
+  const releaseGlobal = await concurrency.acquire({
+    priority: request.headers['x-chat2api-priority'] === 'background'
+      ? 'background'
+      : 'foreground',
+    signal: controller.signal,
+  })
+  if (!releaseGlobal) {
+    settled = true
+    request.raw.off('aborted', abort)
+    reply.raw.off('close', abort)
+    return openAiError(
+      reply,
+      controller.signal.aborted ? 499 : 503,
+      controller.signal.aborted
+        ? 'The client closed the request.'
+        : 'The gateway queue is full or timed out. Try again shortly.',
+      controller.signal.aborted ? 'client_aborted' : 'gateway_at_capacity',
+    )
+  }
 
   const requestLog = storeManager.startRequestLog({
     requestId: request.id,
@@ -202,27 +229,43 @@ async function executeChat(
       }
       request.raw.once('aborted', disconnect)
       reply.raw.once('close', disconnect)
-      pipeline(result.primed.stream, reply.raw, (error) => {
+
+      const finalizeStream = async (pipelineError?: Error | null) => {
+        let completion: ForwardStreamOutcome = pipelineError
+          ? { success: false, status: 502, code: 'stream_interrupted' }
+          : { success: true, status: 200 }
+        if (!pipelineError && result.result.streamOutcome) {
+          try {
+            completion = await result.result.streamOutcome
+          } catch {
+            completion = { success: false, status: 502, code: 'stream_interrupted' }
+          }
+        }
+
         settled = true
         request.raw.off('aborted', disconnect)
         reply.raw.off('close', disconnect)
         detachAbortListeners()
-        const success = !error
-        result.release(success)
+        const aborted = controller.signal.aborted
+        const success = !pipelineError && completion.success
+        result.release(success, success ? undefined : completion)
         releaseGlobal()
         storeManager.finishRequestLog(requestLog.id, {
           status: success ? 'success' : 'error',
-          statusCode: success ? 200 : controller.signal.aborted ? 499 : 502,
+          statusCode: success ? 200 : aborted ? 499 : completion.status,
           latency: Date.now() - startedAt,
           actualModel: result.selection.actualModel,
           providerId: result.selection.provider.id,
           accountId: result.selection.account.id,
           errorCode: success
             ? undefined
-            : controller.signal.aborted
+            : aborted
               ? 'client_aborted'
-              : 'stream_interrupted',
+              : completion.code ?? 'stream_interrupted',
         })
+      }
+      pipeline(result.primed.stream, reply.raw, (error) => {
+        void finalizeStream(error)
       })
       return undefined
     }
@@ -239,7 +282,9 @@ async function executeChat(
       providerId: result.selection.provider.id,
       accountId: result.selection.account.id,
     })
-    return reply.send(result.result.body)
+    return reply.send(
+      applyStopToCompletionBody(applyToolCallsToBody(result.result.body, chat), chat.stop),
+    )
   } catch {
     settled = true
     detachAbortListeners()
@@ -267,12 +312,74 @@ async function executeChat(
   }
 }
 
+// Best-effort application of OpenAI `stop` sequences to a non-stream completion
+// body. DeepSeek web does not honor stop natively; when a stop marker is found
+// the assistant text is truncated and the choice is marked as stopped.
+function applyStopToCompletionBody(body: unknown, stop: string[] | undefined): unknown {
+  if (!stop || stop.length === 0 || body === null || typeof body !== 'object') {
+    return body
+  }
+  const choices = (body as { choices?: unknown }).choices
+  if (!Array.isArray(choices)) return body
+  for (const choice of choices) {
+    if (!choice || typeof choice !== 'object') continue
+    const message = (choice as { message?: unknown }).message
+    if (!message || typeof message !== 'object') continue
+    const content = (message as { content?: unknown }).content
+    if (typeof content !== 'string') continue
+    const truncated = applyStopSequences(content, stop)
+    if (truncated !== content) {
+      ;(message as { content: string }).content = truncated
+      ;(choice as { finish_reason?: unknown }).finish_reason = 'stop'
+    }
+  }
+  return body
+}
+
+// Emulated tool calling: when tools were requested, parse the model's tool
+// envelope out of the non-stream assistant content into OpenAI `tool_calls`.
+// Runs only when tools are present, so normal completions are untouched.
+function applyToolCallsToBody(body: unknown, chat: ChatCompletionRequest): unknown {
+  const tools = chat.tools
+  if (!tools || tools.length === 0 || body === null || typeof body !== 'object') return body
+  const allowed = toolNames(tools)
+  if (allowed.length === 0) return body
+  const choices = (body as { choices?: unknown }).choices
+  if (!Array.isArray(choices)) return body
+  for (const choice of choices) {
+    if (!choice || typeof choice !== 'object') continue
+    const message = (choice as { message?: unknown }).message
+    if (!message || typeof message !== 'object') continue
+    const content = (message as { content?: unknown }).content
+    if (typeof content !== 'string') continue
+    const toolCalls = parseToolCalls(content, allowed)
+    if (toolCalls) {
+      ;(message as Record<string, unknown>).content = null
+      ;(message as Record<string, unknown>).tool_calls = toolCalls
+      ;(choice as Record<string, unknown>).finish_reason = 'tool_calls'
+    }
+  }
+  return body
+}
+
 function publicErrorMessage(code: string): string {
+  if (code === 'invalid_media_input') {
+    return 'The attached file is invalid, unsupported, or exceeds the configured limit.'
+  }
+  if (code === 'provider_media_upload_failed') {
+    return 'DeepSeek could not accept the attached file.'
+  }
+  if (code === 'provider_media_processing_timeout') {
+    return 'DeepSeek did not finish processing the attached file in time.'
+  }
   if (code === 'provider_authentication_failed') {
     return 'The configured DeepSeek session requires attention.'
   }
   if (code === 'provider_rate_limited') {
     return 'DeepSeek is rate limited. Try again later.'
+  }
+  if (code === 'provider_expert_busy') {
+    return 'DeepSeek Expert is temporarily busy. Retry shortly.'
   }
   if (code === 'provider_account_suspended') {
     return 'The configured DeepSeek account is temporarily suspended by the provider.'
@@ -285,6 +392,21 @@ function publicErrorMessage(code: string): string {
   }
   if (code === 'no_available_account') {
     return 'No healthy DeepSeek account is currently available.'
+  }
+  if (code === 'account_queue_timeout') {
+    return 'The DeepSeek account is busy. Try again shortly.'
+  }
+  if (code === 'account_usage_window_exhausted') {
+    return 'DeepSeek account usage is cooling down. Retry after capacity recovers.'
+  }
+  if (code === 'background_capacity_reserved') {
+    return 'Background capacity is paused to keep an account available for foreground requests.'
+  }
+  if (code === 'background_usage_capacity_reserved') {
+    return 'Background capacity is paused to preserve rolling account capacity for foreground requests.'
+  }
+  if (code === 'provider_request_cancelled') {
+    return 'The client closed the request.'
   }
   return 'DeepSeek is currently unavailable.'
 }

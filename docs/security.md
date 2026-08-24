@@ -7,13 +7,19 @@
 - Hash-only client API keys with scopes, model allowlists, expiry, exact
   IP/CIDR restrictions, RPM limits, daily quotas, and grace-period rotation
 - Signed expiring admin sessions, SameSite Strict cookies, and CSRF mutations
-- Strict text-only request schema and bounded request bodies
+- Strict text/media schema, bounded request bodies, decoded-size limits, and
+  PNG/JPEG/WebP/PDF magic-byte validation
 - Request, first-byte, and stream-idle timeouts with client-abort propagation
-- Fresh upstream conversation per request and best-effort deletion on every exit
+- Exclusive upstream session leases with configurable zero-TTL isolation and
+  best-effort retirement
 - Gateway-owned opaque response IDs
-- Account concurrency limits, failover, cooldowns, and credential health checks
+- Bounded priority queues, account concurrency limits, failover, cooldowns, and
+  credential health checks
+- Scope-isolated RPM windows plus foreground concurrency and persistent rolling-usage
+  reserves keep health checks and background analysis from exhausting interactive chat capacity
 - Metadata-only request and audit logs
-- Fixed provider endpoints; no custom provider, media, file, or tool surface
+- Fixed provider endpoints; no custom provider, remote-media fetch, local-path,
+  arbitrary-file, or tool surface
 - Helmet CSP, production HSTS, no-referrer, and frame denial
 - Non-root, read-only, capability-free container
 - Exact admin-host and browser-origin restrictions
@@ -50,4 +56,16 @@ prove only that the token currently works, not future compatibility. In-memory
 rate/circuit state resets on restart, IP allowlists depend on correct bounded
 reverse-proxy trust, and SQLite supports one active replica.
 
+The account field historically named `dailyLimit` is retained in the admin API
+for compatibility, but routing interprets it as the maximum number of provider
+attempts in `CHAT2API_ACCOUNT_USAGE_WINDOW_MS`. API-key `dailyQuota` remains a
+separate hard daily client-security limit.
+
 This gateway does not make web-session automation equivalent to an official API.
+
+DeepSeek's web file-upload protocol is undocumented. Inline files are decoded
+in memory and are never written to gateway logs or storage, but accepted files
+are uploaded to the configured DeepSeek account for extraction. The upstream
+protocol currently exposes no verified deletion operation, so callers must
+assume DeepSeek's own retention policy applies. OCR or document extraction is
+untrusted evidence and must not be treated as bank/payment verification.

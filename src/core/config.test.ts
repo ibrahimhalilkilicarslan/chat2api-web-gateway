@@ -19,9 +19,33 @@ describe('runtime configuration', () => {
     expect(config.adminOrigins).toEqual(['https://gateway.example.com'])
     expect(config.adminHosts).toEqual([])
     expect(config.trustProxy).toBe(1)
-    expect(config.maxBodyBytes).toBe(2 * 1024 * 1024)
+    expect(config.maxBodyBytes).toBe(20 * 1024 * 1024)
     expect(config.streamIdleTimeoutMs).toBe(90_000)
-    expect(config.accountHealthIntervalMs).toBe(15 * 60_000)
+    expect(config.accountHealthIntervalMs).toBe(60 * 60_000)
+    expect(config.accountConcurrency).toBe(1)
+    expect(config.backgroundAccountReserve).toBe(1)
+    expect(config.backgroundUsageReserve).toBe(10)
+    expect(config.accountUsageWindowMs).toBe(15 * 60_000)
+    expect(config.queueMaxDepth).toBe(100)
+    expect(config.queueTimeoutMs).toBe(60_000)
+    expect(config.deepSeekSessionTtlMs).toBe(5 * 60_000)
+  })
+
+  it('supports the legacy background reserve variable without changing window behavior', () => {
+    const legacy = loadRuntimeConfig({
+      ...validEnvironment,
+      CHAT2API_BACKGROUND_DAILY_RESERVE: '7',
+      CHAT2API_ACCOUNT_USAGE_WINDOW_MS: '900000',
+    })
+    expect(legacy.backgroundUsageReserve).toBe(7)
+    expect(legacy.accountUsageWindowMs).toBe(900_000)
+
+    const preferred = loadRuntimeConfig({
+      ...validEnvironment,
+      CHAT2API_BACKGROUND_USAGE_RESERVE: '5',
+      CHAT2API_BACKGROUND_DAILY_RESERVE: '7',
+    })
+    expect(preferred.backgroundUsageReserve).toBe(5)
   })
 
   it('fails closed when required secrets are absent', () => {

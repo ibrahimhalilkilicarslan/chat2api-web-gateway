@@ -21,8 +21,8 @@ export const DEEPSEEK_WEB_HEADERS = {
 } as const
 
 type DeepSeekCurrentUserInspection =
-  | { kind: 'valid'; accessToken: string }
-  | { kind: 'suspended'; suspendedUntil?: number }
+  | { kind: 'valid'; accessToken: string; providerIdentity?: string }
+  | { kind: 'suspended'; suspendedUntil?: number; providerIdentity?: string }
   | { kind: 'authentication_error' }
   | { kind: 'protocol_error' }
 
@@ -34,6 +34,16 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function numericCode(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function providerIdentity(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const normalized = value.trim()
+    return normalized.length > 0 ? normalized : undefined
+  }
+  return typeof value === 'number' && Number.isFinite(value)
+    ? String(value)
+    : undefined
 }
 
 export function inspectDeepSeekCurrentUser(
@@ -50,6 +60,7 @@ export function inspectDeepSeekCurrentUser(
 
   const businessData = record(data?.biz_data) ?? record(root?.biz_data)
   const accessToken = businessData?.token
+  const identity = providerIdentity(businessData?.id)
   const acceptedCodes = (rootCode === undefined || rootCode === 0)
     && (businessCode === undefined || businessCode === 0)
   if (acceptedCodes && typeof accessToken === 'string' && accessToken.length > 0) {
@@ -59,12 +70,17 @@ export function inspectDeepSeekCurrentUser(
       const muteUntilSeconds = numericCode(chat?.mute_until)
       return {
         kind: 'suspended',
+        ...(identity === undefined ? {} : { providerIdentity: identity }),
         ...(muteUntilSeconds === undefined
           ? {}
           : { suspendedUntil: Math.round(muteUntilSeconds * 1000) }),
       }
     }
-    return { kind: 'valid', accessToken }
+    return {
+      kind: 'valid',
+      accessToken,
+      ...(identity === undefined ? {} : { providerIdentity: identity }),
+    }
   }
 
   return { kind: 'protocol_error' }

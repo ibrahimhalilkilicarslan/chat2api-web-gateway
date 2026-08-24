@@ -14,13 +14,28 @@ import { ConcurrencyGate } from './gateway/concurrency.js'
 import { ProviderRoutingEngine } from './gateway/router.js'
 import { registerAdminRoutes } from './routes/admin.js'
 import { registerOpenAiRoutes } from './routes/openai.js'
-import type { AccountHealthChecker } from './providers/account-health.js'
+import {
+  checkProviderAccount,
+  type AccountHealthChecker,
+} from './providers/account-health.js'
 import { accountHealthRegistry } from './providers/account-health-registry.js'
 import { startAccountHealthMonitor } from './providers/account-health-monitor.js'
+import { dispatchAlert } from './providers/alerts.js'
+import { type AccountStateCounts, renderPrometheusMetrics } from './operations/metrics.js'
 import { AdminAuth } from './security/admin-auth.js'
 
 export interface AppDependencies {
   accountHealthChecker?: AccountHealthChecker
+}
+
+// Aggregate DeepSeek account states for the health and metrics surfaces. Returns
+// counts only so neither surface can leak account identities or credentials.
+function deepseekAccountCounts(): AccountStateCounts {
+  const accounts = storeManager.getAccountsByProviderId('deepseek')
+  const total = accounts.length
+  const active = accounts.filter((account) => account.status === 'active').length
+  const error = accounts.filter((account) => account.status === 'error').length
+  return { total, active, error, inactive: total - active - error }
 }
 
 export async function buildApp(
@@ -70,7 +85,10 @@ export async function buildApp(
     config.rateLimitRpm,
     config.dailyQuota,
   )
-  requestForwarder.configure({ requestTimeoutMs: config.requestTimeoutMs })
+  requestForwarder.configure({
+    requestTimeoutMs: config.requestTimeoutMs,
+    sessionTtlMs: config.deepSeekSessionTtlMs,
+  })
 
   await app.register(cookie)
   await app.register(rateLimit, {
@@ -126,9 +144,81 @@ export async function buildApp(
     }
   })
 
-  const routing = new ProviderRoutingEngine(config)
-  const concurrency = new ConcurrencyGate(config.globalConcurrency)
+  const accountHealthChecker = dependencies.accountHealthChecker
+    ?? ((provider, account) => checkProviderAccount(
+      provider,
+      account,
+      undefined,
+      config.masterKey,
+    ))
+  const routing = new ProviderRoutingEngine(config, undefined, storeManager, {
+    getAccountIdentityFingerprint(accountId) {
+      return accountHealthRegistry.get(accountId)?.identityFingerprint
+    },
+    onAccountSuspended(input) {
+      accountHealthRegistry.record(input.accountId, {
+        healthy: false,
+        status: 'suspended',
+        code: 'provider_account_suspended',
+        message: input.message,
+        checkedAt: Date.now(),
+        latencyMs: input.latencyMs,
+        ...(input.retryAt === undefined ? {} : { retryAt: input.retryAt }),
+      })
+      accountHealthMonitor.schedule(input.accountId, input.retryAt)
+    },
+  })
+  const concurrency = new ConcurrencyGate(
+    config.globalConcurrency,
+    config.queueMaxDepth,
+    config.queueTimeoutMs,
+  )
   const adminAuth = new AdminAuth(config)
+
+  const accountHealthMonitor = startAccountHealthMonitor({
+    intervalMs: config.accountHealthIntervalMs,
+    runImmediately: true,
+    checker: accountHealthChecker,
+    onHealthy(accountId) {
+      routing.markAccountHealthy(accountId)
+    },
+    onUnhealthy(accountId, status, message) {
+      // A DeepSeek web token is static and does not auto-refresh, so this is the
+      // operator's cue to paste a fresh token via the admin console.
+      app.log.error(
+        { event: 'account_unhealthy', accountId, providerStatus: status, detail: message },
+        'DeepSeek account unhealthy — the web token likely expired or was suspended; refresh it in the admin console',
+      )
+      void dispatchAlert(
+        config.alertWebhookUrl,
+        {
+          event: 'account_unhealthy',
+          provider: 'deepseek',
+          accountId,
+          status,
+          message,
+          timestamp: new Date().toISOString(),
+        },
+        app.log,
+      )
+    },
+    onRecovered(accountId) {
+      app.log.info({ event: 'account_recovered', accountId }, 'DeepSeek account recovered')
+      void dispatchAlert(
+        config.alertWebhookUrl,
+        {
+          event: 'account_recovered',
+          provider: 'deepseek',
+          accountId,
+          timestamp: new Date().toISOString(),
+        },
+        app.log,
+      )
+    },
+    onError(error) {
+      app.log.warn({ errorType: error.name }, 'account health monitor failed')
+    },
+  })
 
   app.get('/', async (_request, reply) => reply.send({
     service: 'chat2api-web-gateway',
@@ -152,6 +242,39 @@ export async function buildApp(
       return reply.code(503).send({ status: 'not_ready' })
     }
   })
+  // Deep provider-account health for external monitoring/alerting. Intentionally
+  // separate from /health/ready (the container liveness probe) so a dead upstream
+  // token does not trigger a restart loop. Reports counts only — never account
+  // names, emails, or credentials — so it is safe on an unauthenticated surface.
+  app.get('/health/accounts', async (_request, reply) => {
+    try {
+      storeManager.assertReady()
+    } catch {
+      return reply.code(503).send({ status: 'not_ready' })
+    }
+    const counts = deepseekAccountCounts()
+    const healthy = counts.active > 0
+    return reply.code(healthy ? 200 : 503).send({
+      status: healthy ? 'ok' : 'no_healthy_account',
+      provider: 'deepseek',
+      total: counts.total,
+      active: counts.active,
+      error: counts.error,
+      inactive: counts.inactive,
+      healthy,
+    })
+  })
+  // Prometheus scrape target. Aggregates only (no ids/names/credentials); like
+  // /admin it should be restricted at the proxy layer on public deployments.
+  app.get('/metrics', async (_request, reply) => {
+    try {
+      storeManager.assertReady()
+    } catch {
+      return reply.code(503).type('text/plain; charset=utf-8').send('# gateway not ready\n')
+    }
+    const body = renderPrometheusMetrics(storeManager.getOperationalMetrics(), deepseekAccountCounts())
+    return reply.type('text/plain; version=0.0.4; charset=utf-8').send(body)
+  })
 
   await registerOpenAiRoutes(app, routing, concurrency)
   await registerAdminRoutes(
@@ -160,16 +283,8 @@ export async function buildApp(
     adminAuth,
     routing,
     concurrency,
-    dependencies.accountHealthChecker,
+    accountHealthChecker,
   )
-  const stopAccountHealthMonitor = startAccountHealthMonitor({
-    intervalMs: config.accountHealthIntervalMs,
-    checker: dependencies.accountHealthChecker,
-    onError(error) {
-      app.log.warn({ errorType: error.name }, 'account health monitor failed')
-    },
-  })
-
   const webRoot = resolve(process.cwd(), 'dist/web')
   if (existsSync(webRoot)) {
     await app.register(staticFiles, {
@@ -222,7 +337,7 @@ export async function buildApp(
   })
 
   app.addHook('onClose', async () => {
-    stopAccountHealthMonitor()
+    accountHealthMonitor.stop()
     accountHealthRegistry.clear()
     storeManager.flushPendingWrites()
     storeManager.close()

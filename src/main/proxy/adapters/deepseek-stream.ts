@@ -23,6 +23,7 @@ interface ContentDelta {
 }
 
 const SEARCH_CONTROL_MARKER_PATTERN = /^(SEARCH|WEB_SEARCH|SEARCHING)(?:\s+|$)/i
+const EXPERT_BUSY_RETRY_MS = 30_000
 
 export class DeepSeekProviderError extends Error {
   constructor(
@@ -44,17 +45,30 @@ export function providerErrorFromJsonResponse(value: string): DeepSeekProviderEr
     return undefined
   }
 
-  const root = record(parsed)
+  return providerErrorFromPayload(parsed)
+}
+
+export function providerErrorFromPayload(value: unknown): DeepSeekProviderError | undefined {
+  const root = record(value)
   const data = record(root?.data)
   const businessData = record(data?.biz_data) ?? record(root?.biz_data)
-  const businessCode = typeof data?.biz_code === 'number' ? data.biz_code : undefined
-  const businessMessage = safeString(data?.biz_msg).toLowerCase()
-  const isMuted = businessData?.is_muted === true || businessData?.is_muted === 1
+  const businessCode = typeof data?.biz_code === 'number'
+    ? data.biz_code
+    : typeof root?.biz_code === 'number'
+      ? root.biz_code
+      : undefined
+  const businessMessage = safeString(data?.biz_msg ?? root?.biz_msg).toLowerCase()
+  const chat = record(businessData?.chat)
+  const isMuted = businessData?.is_muted === true
+    || businessData?.is_muted === 1
+    || chat?.is_muted === true
+    || chat?.is_muted === 1
 
   if (businessCode === 5 || isMuted || businessMessage.includes('user is muted')) {
-    const muteUntilSeconds = typeof businessData?.mute_until === 'number'
-      && Number.isFinite(businessData.mute_until)
-      ? businessData.mute_until
+    const muteUntil = businessData?.mute_until ?? chat?.mute_until
+    const muteUntilSeconds = typeof muteUntil === 'number'
+      && Number.isFinite(muteUntil)
+      ? muteUntil
       : undefined
     const retryAfterMs = muteUntilSeconds === undefined
       ? undefined
@@ -75,9 +89,21 @@ export function providerErrorFromJsonResponse(value: string): DeepSeekProviderEr
     )
   }
 
+  if (businessCode === 429 || businessMessage.includes('rate limit')) {
+    return new DeepSeekProviderError(
+      'provider_rate_limited',
+      429,
+      'DeepSeek rate limit reached. Retry later.',
+    )
+  }
+
+  if (businessMessage.includes('expert_busy_use_default')) {
+    return expertBusyError()
+  }
+
   if (businessCode !== undefined && businessCode !== 0) {
     return new DeepSeekProviderError(
-      'provider_response_error',
+      providerResponseErrorCode(`biz_${businessCode}`),
       502,
       'DeepSeek could not complete the request.',
     )
@@ -86,19 +112,37 @@ export function providerErrorFromJsonResponse(value: string): DeepSeekProviderEr
   return undefined
 }
 
+export interface DeepSeekStreamOutcome {
+  status: 'success' | 'provider_error' | 'interrupted'
+  errorCode?: string
+  statusCode?: number
+  retryAfterMs?: number
+}
+
 function providerErrorFromChunk(chunk: StreamChunk): DeepSeekProviderError | undefined {
   if (chunk.type !== 'error') return undefined
-  if (chunk.finish_reason === 'rate_limit_reached') {
+  const finishReason = safeString(chunk.finish_reason).trim().toLowerCase()
+  if (finishReason === 'rate_limit_reached') {
     return new DeepSeekProviderError(
       'provider_rate_limited',
       429,
       'DeepSeek rate limit reached. Retry later.',
     )
   }
+  if (finishReason === 'expert_busy_use_default') return expertBusyError()
   return new DeepSeekProviderError(
-    'provider_response_error',
+    providerResponseErrorCode(chunk.finish_reason),
     502,
     'DeepSeek could not complete the request.',
+  )
+}
+
+function expertBusyError(): DeepSeekProviderError {
+  return new DeepSeekProviderError(
+    'provider_expert_busy',
+    503,
+    'DeepSeek Expert capacity is temporarily unavailable. Retry shortly.',
+    EXPERT_BUSY_RETRY_MS,
   )
 }
 
@@ -110,6 +154,18 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function providerResponseErrorCode(reason: unknown): string {
+  const normalized = safeString(reason)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64)
+  return normalized
+    ? `provider_response_error_${normalized}`
+    : 'provider_response_error'
 }
 
 function responseId(): string {
@@ -269,16 +325,23 @@ export class DeepSeekStreamHandler {
   private isDone = false
   private hasOutput = false
   private cleanupStarted = false
+  private readonly resolveOutcome: (outcome: DeepSeekStreamOutcome) => void
+  readonly outcome: Promise<DeepSeekStreamOutcome>
 
   constructor(
     private readonly model: string,
-    private readonly onEnd?: () => void | Promise<void>,
+    private readonly onEnd?: (outcome: DeepSeekStreamOutcome) => void | Promise<void>,
     webSearchEnabled = false,
     reasoningEffort?: string,
     id = responseId(),
   ) {
     this.id = id
     this.decoder = new DeepSeekEventDecoder(Boolean(reasoningEffort), webSearchEnabled)
+    let resolveOutcome!: (outcome: DeepSeekStreamOutcome) => void
+    this.outcome = new Promise((resolve) => {
+      resolveOutcome = resolve
+    })
+    this.resolveOutcome = resolveOutcome
   }
 
   handleStream(stream: NodeJS.ReadableStream): NodeJS.ReadableStream {
@@ -332,11 +395,11 @@ export class DeepSeekStreamHandler {
         this.isDone = true
         output.destroy(error)
       }
-      this.cleanup()
+      this.cleanup({ status: 'interrupted' })
     })
     output.once('close', () => {
       if (!this.isDone && !source.destroyed) source.destroy()
-      this.cleanup()
+      this.cleanup({ status: 'interrupted' })
     })
 
     return output
@@ -346,6 +409,7 @@ export class DeepSeekStreamHandler {
     let content = ''
     let reasoningContent = ''
     let providerError: DeepSeekProviderError | undefined
+    let outcome: DeepSeekStreamOutcome = { status: 'success' }
 
     try {
       let buffer = ''
@@ -405,8 +469,18 @@ export class DeepSeekStreamHandler {
         }],
         created: this.created,
       }
+    } catch (error) {
+      outcome = error instanceof DeepSeekProviderError
+        ? {
+            status: 'provider_error',
+            errorCode: error.code,
+            statusCode: error.status,
+            retryAfterMs: error.retryAfterMs,
+          }
+        : { status: 'interrupted', statusCode: 502 }
+      throw error
     } finally {
-      await this.cleanup()
+      await this.cleanup(outcome)
     }
   }
 
@@ -474,7 +548,7 @@ export class DeepSeekStreamHandler {
     output.write(this.createChunk({}, 'stop'))
     output.write('data: [DONE]\n\n')
     output.end()
-    this.cleanup()
+    this.cleanup({ status: 'success' })
   }
 
   private failStream(output: PassThrough, error: DeepSeekProviderError): void {
@@ -490,16 +564,23 @@ export class DeepSeekStreamHandler {
     })}\n\n`)
     output.write('data: [DONE]\n\n')
     output.end()
-    this.cleanup()
+    this.cleanup({
+      status: 'provider_error',
+      errorCode: error.code,
+      statusCode: error.status,
+      retryAfterMs: error.retryAfterMs,
+    })
   }
 
-  private async cleanup(): Promise<void> {
+  private async cleanup(outcome: DeepSeekStreamOutcome): Promise<void> {
     if (this.cleanupStarted) return
     this.cleanupStarted = true
     try {
-      await this.onEnd?.()
+      await this.onEnd?.(outcome)
     } catch {
       // Cleanup is best effort and must not alter the client response.
+    } finally {
+      this.resolveOutcome(outcome)
     }
   }
 }

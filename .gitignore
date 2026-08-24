@@ -48,6 +48,7 @@ CLAUDE.md
 # Environment
 .env
 .env.bak.*
+.env.backup_*
 .env.local
 .env.*.local
 !.env.example

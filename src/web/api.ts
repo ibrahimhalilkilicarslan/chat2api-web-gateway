@@ -123,6 +123,37 @@ export function validateAccountCredentials(input: {
   })
 }
 
+export interface AccountExportBundle {
+  format: string
+  version: number
+  count: number
+  exportedAt: string
+  [key: string]: unknown
+}
+
+export interface AccountImportResult {
+  added: number
+  total: number
+  results: Array<{ name: string; status: string }>
+}
+
+export function exportAccounts(passphrase: string): Promise<AccountExportBundle> {
+  return request('/admin/api/accounts/export', {
+    method: 'POST',
+    body: JSON.stringify({ passphrase }),
+  })
+}
+
+export function importAccounts(
+  passphrase: string,
+  bundle: unknown,
+): Promise<AccountImportResult> {
+  return request('/admin/api/accounts/import', {
+    method: 'POST',
+    body: JSON.stringify({ passphrase, bundle }),
+  })
+}
+
 export function startDeepSeekLink(input: {
   name: string
   email?: string

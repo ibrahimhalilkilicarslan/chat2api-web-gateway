@@ -197,6 +197,22 @@ export class GatewayDatabase {
           .run(2, Date.now())
       })()
     }
+
+    if (current.version < 3) {
+      this.connection.transaction(() => {
+        this.connection.exec(`
+          CREATE TABLE account_usage_events (
+            account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            used_at INTEGER NOT NULL
+          );
+          CREATE INDEX idx_account_usage_events_account_time
+          ON account_usage_events(account_id, used_at);
+        `)
+        this.connection
+          .prepare('INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)')
+          .run(3, Date.now())
+      })()
+    }
   }
 
   private fileSize(path: string): number {

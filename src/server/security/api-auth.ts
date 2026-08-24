@@ -41,7 +41,8 @@ export function requireApiScope(scope: ApiScope) {
       return
     }
 
-    const minute = limiter.consume(record)
+    // Health/model discovery must not consume the same burst budget as chat work.
+    const minute = limiter.consume(record, Date.now(), scope)
     reply.header('X-RateLimit-Limit', minute.limit)
     reply.header('X-RateLimit-Remaining', minute.remaining)
     reply.header('X-RateLimit-Reset', Math.ceil(minute.resetAt / 1000))
@@ -57,18 +58,20 @@ export function requireApiScope(scope: ApiScope) {
       return
     }
 
-    const daily = storeManager.consumeApiKeyDailyQuota(record)
-    reply.header('X-DailyLimit-Limit', daily.limit)
-    reply.header('X-DailyLimit-Remaining', Math.max(0, daily.limit - daily.used))
-    if (!daily.allowed) {
-      await reply.code(429).send({
-        error: {
-          message: 'Daily quota exceeded.',
-          type: 'rate_limit_error',
-          code: 'daily_quota_exceeded',
-        },
-      })
-      return
+    if (scope === 'chat') {
+      const daily = storeManager.consumeApiKeyDailyQuota(record)
+      reply.header('X-DailyLimit-Limit', daily.limit)
+      reply.header('X-DailyLimit-Remaining', Math.max(0, daily.limit - daily.used))
+      if (!daily.allowed) {
+        await reply.code(429).send({
+          error: {
+            message: 'Daily quota exceeded.',
+            type: 'rate_limit_error',
+            code: 'daily_quota_exceeded',
+          },
+        })
+        return
+      }
     }
 
     request.apiKey = record

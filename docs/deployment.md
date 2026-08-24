@@ -25,7 +25,12 @@ Operational limits include:
 - `CHAT2API_FIRST_BYTE_TIMEOUT_MS`
 - `CHAT2API_STREAM_IDLE_TIMEOUT_MS`
 - `CHAT2API_ACCOUNT_HEALTH_INTERVAL_MS` (`0` disables scheduled checks)
-- global/account concurrency, RPM, and daily quota variables
+- `CHAT2API_ACCOUNT_CONCURRENCY` (DeepSeek web accounts default to one active request)
+- `CHAT2API_ACCOUNT_USAGE_WINDOW_MS` (default `900000`; account limits recover gradually)
+- `CHAT2API_BACKGROUND_USAGE_RESERVE` (usage slots kept for foreground requests)
+- `CHAT2API_QUEUE_MAX_DEPTH` and `CHAT2API_QUEUE_TIMEOUT_MS`
+- `CHAT2API_DEEPSEEK_SESSION_TTL_MS` (`0` disables session reuse)
+- global concurrency, RPM, and daily quota variables
 
 Store all real values only in Coolify secret configuration. Unrestricted
 `CHAT2API_TRUST_PROXY=true` is rejected.

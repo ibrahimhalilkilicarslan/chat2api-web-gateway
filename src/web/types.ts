@@ -19,7 +19,16 @@ export interface Overview {
     active: number
     limit: number
     accountConcurrency: Array<{ accountId: string; active: number }>
+    accountQueue: Array<{ accountId: string; foreground: number; background: number }>
     openCircuits: Array<{ accountId: string; failures: number; openedUntil: number }>
+    deepSeekSessions: {
+      active: number
+      idle: number
+      created: number
+      reused: number
+      retired: number
+      invalidated: number
+    }
     readiness: OperationalReadiness
   }
 }
@@ -38,6 +47,8 @@ export interface OperationalReadiness {
     | 'provider_timeout'
     | 'provider_protocol_changed'
     | 'no_available_account'
+    | 'account_queue_timeout'
+    | 'account_usage_window_exhausted'
   activeAccountCount: number
   healthyAccountCount: number
   openCircuitCount: number
@@ -76,6 +87,7 @@ export interface AccountHealthResult {
   checkedAt: number
   latencyMs: number
   retryAt?: number
+  identityDuplicate?: boolean
 }
 
 export interface Account {
@@ -92,7 +104,12 @@ export interface Account {
   requestCount: number
   dailyLimit?: number
   todayUsed: number
+  usageWindowLimit?: number
+  usageWindowUsed: number
+  usageWindowMinutes: number
+  usageWindowResetAt: number | null
   health: AccountHealthResult | null
+  identityDuplicate: boolean
   cooldownUntil: number | null
 }
 

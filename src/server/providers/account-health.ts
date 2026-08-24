@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
 import {
   DEEPSEEK_CURRENT_USER_ENDPOINT,
@@ -22,12 +23,26 @@ export interface AccountHealthResult {
   checkedAt: number
   latencyMs: number
   retryAt?: number
+  identityFingerprint?: string
 }
 
 type HealthHttpGet = (
   url: string,
   config: AxiosRequestConfig,
 ) => Promise<{ status: number; data?: unknown }>
+
+function identityFingerprint(
+  providerId: string,
+  identity: string | undefined,
+  key: Buffer | undefined,
+): string | undefined {
+  if (!identity || !key) return undefined
+  return createHmac('sha256', key)
+    .update(providerId)
+    .update('\0')
+    .update(identity)
+    .digest('base64url')
+}
 
 function result(
   startedAt: number,
@@ -69,6 +84,7 @@ export async function checkProviderAccount(
   provider: Provider,
   account: Account,
   httpGet: HealthHttpGet = (url, config) => axios.get(url, config),
+  identityHashKey?: Buffer,
 ): Promise<AccountHealthResult> {
   const startedAt = Date.now()
 
@@ -88,11 +104,17 @@ export async function checkProviderAccount(
       const inspection = inspectDeepSeekCurrentUser(response.data)
       if (inspection.kind === 'authentication_error') return fromStatus(startedAt, 401)
       if (inspection.kind === 'suspended') {
+        const fingerprint = identityFingerprint(
+          provider.id,
+          inspection.providerIdentity,
+          identityHashKey,
+        )
         return result(startedAt, {
           healthy: false,
           status: 'suspended',
           code: 'provider_account_suspended',
           message: 'The DeepSeek account is temporarily suspended by the provider.',
+          ...(fingerprint === undefined ? {} : { identityFingerprint: fingerprint }),
           ...(inspection.suspendedUntil === undefined
             ? {}
             : { retryAt: inspection.suspendedUntil }),
@@ -107,11 +129,17 @@ export async function checkProviderAccount(
         })
       }
 
+      const fingerprint = identityFingerprint(
+        provider.id,
+        inspection.providerIdentity,
+        identityHashKey,
+      )
       return result(startedAt, {
         healthy: true,
         status: 'healthy',
         code: 'provider_healthy',
         message: 'DeepSeek web session is valid.',
+        ...(fingerprint === undefined ? {} : { identityFingerprint: fingerprint }),
       })
     }
 
@@ -137,4 +165,7 @@ export async function checkProviderAccount(
   })
 }
 
-export type AccountHealthChecker = typeof checkProviderAccount
+export type AccountHealthChecker = (
+  provider: Provider,
+  account: Account,
+) => Promise<AccountHealthResult>

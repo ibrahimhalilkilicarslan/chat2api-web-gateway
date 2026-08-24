@@ -21,6 +21,22 @@ export class AccountHealthRegistry {
     return [...this.snapshots.values()].sort((left, right) => right.checkedAt - left.checkedAt)
   }
 
+  findDuplicateIdentity(
+    identityFingerprint: string | undefined,
+    excludeAccountId?: string,
+  ): AccountHealthSnapshot | undefined {
+    if (!identityFingerprint) return undefined
+    return this.list().find((snapshot) => (
+      snapshot.accountId !== excludeAccountId
+      && snapshot.identityFingerprint === identityFingerprint
+    ))
+  }
+
+  hasDuplicateIdentity(accountId: string): boolean {
+    const current = this.get(accountId)
+    return Boolean(this.findDuplicateIdentity(current?.identityFingerprint, accountId))
+  }
+
   delete(accountId: string): void {
     this.snapshots.delete(accountId)
   }

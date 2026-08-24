@@ -82,6 +82,7 @@ const serverSource = [
 ].map((path) => readFileSync(resolve(root, path), 'utf8')).join('\n')
 const storeSource = readFileSync(resolve(root, 'src/main/store/store.ts'), 'utf8')
 const databaseSource = readFileSync(resolve(root, 'src/core/storage/database.ts'), 'utf8')
+const chatSchemaSource = readFileSync(resolve(root, 'src/server/schemas/chat.ts'), 'utf8')
 
 if (!serverSource.includes("drop: ['console', 'debugger']")) {
   fail('production build does not strip legacy console diagnostics')
@@ -100,8 +101,19 @@ for (const persistedBodyMarker of [
 if (!serverSource.includes("provider.type !== 'builtin'")) {
   fail('custom provider fail-closed guard is missing')
 }
-if (!/content:\s*z\.string\(\)[\s\S]{0,160}\.min\(1\)/.test(serverSource)) {
-  fail('text-only chat input contract is missing')
+if (!/const textContent = z\.string\(\)[\s\S]{0,160}\.min\(1\)/.test(chatSchemaSource)) {
+  fail('bounded text chat input contract is missing')
+}
+for (const requiredMediaGuard of [
+  'ALLOWED_MEDIA_DATA_URL',
+  'MAX_MEDIA_PARTS_PER_MESSAGE',
+  "type: z.literal('image_url')",
+  "type: z.literal('file')",
+  'Only inline PNG, JPEG, WebP, and PDF data URLs are supported.',
+]) {
+  if (!chatSchemaSource.includes(requiredMediaGuard)) {
+    fail(`bounded inline-media schema guard is missing: ${requiredMediaGuard}`)
+  }
 }
 if (serverSource.includes('CHAT2API_ALLOW_REMOTE_MEDIA')) {
   fail('remote media URL opt-in must not be available')
@@ -139,6 +151,19 @@ if (
   )
 ) {
   fail('DeepSeek adapter no longer uses the fixed code-owned API base')
+}
+for (const requiredUploadGuard of [
+  "const UPLOAD_FILE_PATH = '/v0/file/upload_file'",
+  "const FETCH_FILES_PATH = '/v0/file/fetch_files'",
+  "const UPLOAD_FILE_TARGET_PATH = '/api/v0/file/upload_file'",
+  'assertMediaMagicBytes',
+  'MAX_MEDIA_FILE_BYTES',
+  'MAX_MEDIA_TOTAL_BYTES',
+  'ref_file_ids: refFileIds',
+]) {
+  if (!deepSeekAdapter.includes(requiredUploadGuard)) {
+    fail(`DeepSeek inline-media upload guard is missing: ${requiredUploadGuard}`)
+  }
 }
 const storeTypes = readFileSync(resolve(root, 'src/main/store/types.ts'), 'utf8')
 if (storeTypes.includes('apiEndpoint') || storeTypes.includes('chatPath')) {

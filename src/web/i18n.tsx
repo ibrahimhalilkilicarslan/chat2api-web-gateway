@@ -63,6 +63,10 @@ export const messageTable: Readonly<Record<string, Translation>> = {
   'Veriler hazırlanıyor': ['Preparing data', '正在准备数据'],
   '30 sn otomatik yenile': ['Auto-refresh every 30 sec', '每 30 秒自动刷新'],
   'Hesap durumu güncellendi.': ['Account status updated.', '账户状态已更新。'],
+  'Bu oturum başka bir kayıtla aynı DeepSeek hesabına ait. Güvenlik için yalnız tek kayıt kullanılır.': [
+    'This session belongs to the same DeepSeek identity as another record. Only one record is used for safety.',
+    '此会话与另一条记录属于同一个 DeepSeek 账户。为确保安全，仅使用一条记录。',
+  ],
   'Bağlantı testi tamamlanamadı.': [
     'The connection test could not be completed.',
     '无法完成连接测试。',
@@ -113,6 +117,9 @@ export const messageTable: Readonly<Record<string, Translation>> = {
   'DeepSeek hesabı': ['DeepSeek account', 'DeepSeek 账户'],
   'En az bir aktif web oturumu': ['At least one active web session', '至少一个有效的网页会话'],
   'Hesap ekle': ['Add account', '添加账户'],
+  'İçe aktar': ['Import', '导入'],
+  'Dışa aktar': ['Export', '导出'],
+  'İçe aktarma başarısız.': ['Import failed.', '导入失败。'],
   'Bağlantı kontrolü': ['Connection check', '连接检查'],
   'Aktif hesabın oturum doğrulaması': [
     'Session verification for the active account',
@@ -149,9 +156,9 @@ export const messageTable: Readonly<Record<string, Translation>> = {
   ],
   'Hesap yönetimi': ['Account management', '账户管理'],
   'DeepSeek web oturumlarını yönetin': ['Manage DeepSeek web sessions', '管理 DeepSeek 网页会话'],
-  'Hesapları kapasite, sağlık ve günlük kullanım bilgisiyle tek ekranda izleyin.': [
-    'Monitor capacity, health, and daily usage for every account in one place.',
-    '在一个界面中监控所有账户的容量、健康状态和每日用量。',
+  'Hesapları kapasite, sağlık ve kayan pencere kullanımıyla tek ekranda izleyin.': [
+    'Monitor capacity, health, and rolling-window usage for every account in one place.',
+    '在一个界面中监控所有账户的容量、健康状态和滚动窗口用量。',
   ],
   'Hesap gerekli': ['Account required', '需要账户'],
   'model': ['models', '模型'],
@@ -166,10 +173,15 @@ export const messageTable: Readonly<Record<string, Translation>> = {
   'E-posta etiketi yok': ['No email label', '无邮箱标签'],
   'Bugün': ['Today', '今日'],
   'Günlük limit': ['Daily limit', '每日上限'],
+  'Pencere limiti': ['Window limit', '窗口上限'],
+  'Bugün başarılı': ['Successful today', '今日成功'],
   'Sınırsız': ['Unlimited', '无限制'],
   'Gecikme': ['Latency', '延迟'],
   'Son kullanım': ['Last used', '上次使用'],
   'Kota kullanımı': ['Quota usage', '配额使用量'],
+  'Kayan pencere kullanımı': ['Rolling-window usage', '滚动窗口用量'],
+  'İlk kullanım slotu': ['The first usage slot', '首个使用槽位'],
+  'geri gelecek.': ['will become available.', '后恢复。'],
   'Devre kesici': ['Circuit breaker', '熔断器'],
   'kapanacak.': ['will close.', '后关闭。'],
   'Bu hesabın oturumu doğrulanamadı. Bağlantıyı yeniden test edin.': [
@@ -308,9 +320,9 @@ export const messageTable: Readonly<Record<string, Translation>> = {
     '按顺序将请求分配给活动账户。',
   ],
   'En az kullanılan': ['Least used', '最少使用'],
-  'Günlük kullanımı düşük hesabı tercih eder.': [
-    'Prefers the account with the lowest daily usage.',
-    '优先选择每日用量最低的账户。',
+  'Son kullanım penceresi daha boş hesabı tercih eder.': [
+    'Prefers the account with more room in its recent usage window.',
+    '优先选择近期使用窗口余量更大的账户。',
   ],
   'Sabit öncelik': ['Fixed priority', '固定优先级'],
   'İlk hesabı kullanır, sorun halinde sıradakine geçer.': [
@@ -405,6 +417,11 @@ export const messageTable: Readonly<Record<string, Translation>> = {
   'Günlük istek sınırı': ['Daily request limit', '每日请求上限'],
   'Boş değer hesap sınırını kaldırır.': ['Leave blank to remove the account limit.', '留空可移除账户上限。'],
   'Hesap bazlı güvenli tavan': ['Safe per-account ceiling', '账户级安全上限'],
+  '15 dakikalık istek bütçesi': ['15-minute request budget', '15 分钟请求预算'],
+  'Eski denemeler süre doldukça kademeli çıkar; günlük kilit oluşturmaz.': [
+    'Older attempts leave the window gradually; this does not create a daily lock.',
+    '较早的尝试会随时间逐步移出窗口，不会形成整日锁定。',
+  ],
   'Bağlantı yöntemi': ['Connection method', '连接方式'],
   'Otomatik aktarım önerilir; manuel token yedek yöntemdir': [
     'Automatic transfer is recommended; manual token entry is a fallback.',
@@ -713,6 +730,10 @@ export const messageTable: Readonly<Record<string, Translation>> = {
     '需要检查 DeepSeek 网页协议',
   ],
   'Kullanılabilir hesap bulunamadı': ['No usable account found', '未找到可用账户'],
+  'Hesapların kısa dönem kullanım bütçesi doldu': [
+    'The short-term account usage budget is exhausted',
+    '账户短期使用预算已耗尽',
+  ],
   'DeepSeek oturumu yeniden bağlanmalı.': [
     'The DeepSeek session must be reconnected.',
     '必须重新连接 DeepSeek 会话。',
@@ -728,6 +749,14 @@ export const messageTable: Readonly<Record<string, Translation>> = {
   'Trafiği karşılayacak kullanılabilir hesap yok.': [
     'No usable account can handle traffic.',
     '没有可处理流量的账户。',
+  ],
+  'DeepSeek hesabı yoğun; istek sırada tamamlanamadı.': [
+    'The DeepSeek account is busy and the queued request timed out.',
+    'DeepSeek 账户繁忙，排队请求已超时。',
+  ],
+  'Hesap kapasitesi kısa süreliğine dinleniyor.': [
+    'Account capacity is cooling down briefly.',
+    '账户容量正在短暂冷却。',
   ],
   'DeepSeek bağlantısı geçici olarak kullanılamıyor.': [
     'The DeepSeek connection is temporarily unavailable.',
@@ -745,6 +774,14 @@ export const messageTable: Readonly<Record<string, Translation>> = {
     'Review account status, daily quota, and circuit-breaker information together.',
     '请同时检查账户状态、每日配额和熔断器信息。',
   ],
+  'Ön plan taslakları arka plan analizlerinden önce çalışır; kuyruk süresi dolarsa istemci kısa süre sonra yeniden denemelidir.': [
+    'Foreground drafts run before background analysis; clients should retry shortly after a queue timeout.',
+    '前台草稿优先于后台分析；队列超时后，客户端应稍后重试。',
+  ],
+  'Son 15 dakikadaki eski istekler pencereden çıktıkça kapasite otomatik ve kademeli olarak geri gelir.': [
+    'Capacity returns automatically and gradually as older requests leave the 15-minute window.',
+    '随着较早请求移出 15 分钟窗口，容量会自动逐步恢复。',
+  ],
   'Beklemede': ['Waiting', '等待中'],
   'Sağlıklı': ['Healthy', '健康'],
   'Duraklatıldı': ['Paused', '已暂停'],
@@ -755,6 +792,11 @@ export const messageTable: Readonly<Record<string, Translation>> = {
     'DeepSeek 连接方式可能已更改',
   ],
   'Kullanılabilir hesap yok': ['No usable account', '无可用账户'],
+  'Kısa dönem hesap bütçesi doldu': ['Short-term account budget exhausted', '账户短期预算已耗尽'],
+  'Ön plan için hesap kapasitesi ayrıldı': [
+    'Account capacity reserved for foreground work',
+    '已为前台任务保留账户容量',
+  ],
   'Sağlayıcı isteği sınırladı': ['Provider rate-limited the request', '提供商限制了请求'],
   'Oturum doğrulanamadı': ['Session verification failed', '会话验证失败'],
   'Sağlayıcıya ulaşılamadı': ['Provider unavailable', '无法访问提供商'],

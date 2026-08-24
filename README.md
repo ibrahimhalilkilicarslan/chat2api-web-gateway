@@ -43,7 +43,7 @@ Chat2API intentionally keeps a narrow product boundary:
 - A non-root, read-only, capability-free Docker runtime
 
 Electron, bundled browsers, arbitrary providers, official API fallback, remote
-media, tool emulation, persistent upstream conversations, and prompt or
+media fetching, tool emulation, persistent upstream conversations, and prompt or
 completion logging are deliberately excluded.
 
 ## Product tour
@@ -76,13 +76,14 @@ flowchart LR
   Console --> Gateway
   Connector["Local Session Connector"] -->|One-time encrypted handoff| Gateway
   Connector -->|Isolated browser profile| DeepSeek["DeepSeek web"]
-  Gateway -->|Fresh conversation per request| DeepSeek
+  Gateway -->|Serialized session leases| DeepSeek
   Gateway --> Store[("Encrypted SQLite store")]
 ```
 
-Each API request creates a fresh upstream conversation and removes it when the
-response completes, fails, times out, or the client disconnects. Public response
-IDs are generated locally and do not expose upstream conversation identifiers.
+Each upstream conversation is leased to only one request at a time. Successful
+leases can be reused for a short configurable TTL to reduce session churn;
+invalid or expired leases are retired. Set the TTL to zero for fresh-session
+isolation. Public response IDs never expose upstream conversation identifiers.
 
 ## Quick install
 
@@ -172,15 +173,22 @@ Dependency-free [curl](examples/curl.sh), [Node.js](examples/node.mjs), and
 | `GET /health/live` | Process liveness |
 | `GET /health/ready` | Store readiness |
 | `GET /v1/models` | Models available through active DeepSeek accounts |
-| `POST /v1/chat/completions` | Text messages, JSON response, or SSE stream |
+| `POST /v1/chat/completions` | Text plus bounded inline PNG/JPEG/WebP/PDF input, JSON response, or SSE stream |
 | `/admin/` | Accounts, keys, activity, audit, settings, and maintenance |
 
 Accepted chat fields are `model`, `messages`, `stream`, `web_search`, and
 `reasoning_effort`. Message roles are `system`, `user`, and `assistant`, with
-string content only.
+string content by default. A `user` message may instead contain OpenAI-style
+`text`, `image_url`, and `file` parts. Media must be an inline base64 `data:` URL;
+the gateway never fetches a caller-supplied URL or local path.
 
-Images, files, tools, JSON mode, sampling controls, `/v1/completions`, and
+Only PNG, JPEG, WebP, and PDF attachments are accepted, with four files per
+request, 6 MiB per file, and 12 MiB decoded total. Tools, arbitrary files,
+remote images, JSON mode, sampling controls, `/v1/completions`, and
 `/v1/responses` fail explicitly instead of being silently ignored.
+Direct attachments use `deepseek-v4-flash`; DeepSeek web rejects file references
+in `deepseek-v4-pro`. A Pro final answer therefore requires bounded media
+extraction followed by a separate text-only Pro request.
 
 ## Security model
 
@@ -191,7 +199,7 @@ Images, files, tools, JSON mode, sampling controls, `/v1/completions`, and
 - Optional exact admin-host restriction
 - No prompt, completion, cookie, provider payload, or credential persistence
 - Fixed code-owned DeepSeek endpoints
-- Strict text-only request schemas and bounded request bodies
+- Strict text/media request schemas, magic-byte validation, and bounded request bodies
 - Global and per-account concurrency controls
 - RPM, daily quota, model allowlist, expiry, and CIDR policies
 - Circuit breakers with first-byte, request, and stream-idle timeouts

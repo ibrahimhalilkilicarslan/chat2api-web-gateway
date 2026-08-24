@@ -49,6 +49,8 @@ import {
   createAccount,
   createApiKey,
   deleteAccount,
+  exportAccounts,
+  importAccounts,
   deleteApiKey,
   getSession,
   getDeepSeekLink,
@@ -146,6 +148,42 @@ const navigation: Array<{
     icon: ShieldCheck,
   },
 ]
+
+// Trigger a client-side download of a JSON payload (admin surface, no CSP limits).
+function downloadJson(filename: string, data: unknown): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+}
+
+// Prompt the operator to choose a JSON file and parse it; resolves null on cancel
+// or an unparseable file.
+async function pickJsonFile(): Promise<unknown | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'application/json,.json'
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) {
+        resolve(null)
+        return
+      }
+      try {
+        resolve(JSON.parse(await file.text()))
+      } catch {
+        resolve(null)
+      }
+    }
+    input.click()
+  })
+}
 
 export function App() {
   const { locale } = useI18n()
@@ -257,6 +295,35 @@ export function App() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'İşlem tamamlanamadı.')
       return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleExportAccounts = async () => {
+    const passphrase = window.prompt(
+      'Dışa aktarma şifresi (en az 12 karakter) — içe aktarırken bu şifre gerekli olacak:',
+    )
+    if (!passphrase) return
+    await run(async () => {
+      const bundle = await exportAccounts(passphrase)
+      downloadJson(`chat2api-accounts-${new Date().toISOString().slice(0, 10)}.json`, bundle)
+    }, 'Hesaplar şifreli dosyaya aktarıldı.')
+  }
+
+  const handleImportAccounts = async () => {
+    const bundle = await pickJsonFile()
+    if (bundle === null) return
+    const passphrase = window.prompt('Dışa aktarma dosyasının şifresi:')
+    if (!passphrase) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await importAccounts(passphrase, bundle)
+      setNotice(`${result.added}/${result.total} hesap içe aktarıldı.`)
+      await refresh(true)
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : 'İçe aktarma başarısız.')
     } finally {
       setBusy(false)
     }
@@ -466,6 +533,8 @@ export function App() {
                       await run(() => deleteAccount(account.id), 'Hesap silindi.')
                     },
                   })}
+                  onExportAccounts={handleExportAccounts}
+                  onImportAccounts={handleImportAccounts}
                 />
               )}
               {view === 'keys' && (
@@ -805,6 +874,10 @@ function OverviewPage({
   ]
   const readinessCount = readiness.filter((item) => item.complete).length
   const endpoint = `${window.location.origin}/v1`
+  const queuedRequests = data.overview.gateway.accountQueue.reduce(
+    (total, entry) => total + entry.foreground + entry.background,
+    0,
+  )
 
   const metrics = [
     {
@@ -839,11 +912,15 @@ function OverviewPage({
     {
       label: 'Anlık kapasite',
       value: `${data.overview.gateway.active}/${data.overview.gateway.limit}`,
-      detail: data.overview.gateway.openCircuits.length > 0
+      detail: queuedRequests > 0
+        ? `${queuedRequests} istek sırada`
+        : data.overview.gateway.openCircuits.length > 0
         ? `${data.overview.gateway.openCircuits.length} açık devre`
-        : 'Devre kesici normal',
+        : `${data.overview.gateway.deepSeekSessions.reused} oturum yeniden kullanıldı`,
       icon: Server,
-      tone: data.overview.gateway.openCircuits.length > 0 ? 'danger' : 'neutral',
+      tone: data.overview.gateway.openCircuits.length > 0
+        ? 'danger'
+        : queuedRequests > 0 ? 'warning' : 'neutral',
     },
   ]
 
@@ -942,6 +1019,8 @@ function ProvidersPage(props: {
   onAccountEdit: (account: Account) => void
   onAccountTest: (account: Account) => void
   onAccountDelete: (account: Account) => void
+  onExportAccounts: () => void
+  onImportAccounts: () => void
 }) {
   const firstProvider = props.providers[0]
   return (
@@ -950,11 +1029,19 @@ function ProvidersPage(props: {
       <PageIntro
         eyebrow="Hesap yönetimi"
         title="DeepSeek web oturumlarını yönetin"
-        description="Hesapları kapasite, sağlık ve günlük kullanım bilgisiyle tek ekranda izleyin."
+        description="Hesapları kapasite, sağlık ve kayan pencere kullanımıyla tek ekranda izleyin."
         action={firstProvider && (
-          <button className="primary-button" onClick={() => props.onAdd(firstProvider)}>
-            <Plus size={16} /> Hesap ekle
-          </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button className="secondary-button" onClick={props.onImportAccounts}>
+              İçe aktar
+            </button>
+            <button className="secondary-button" onClick={props.onExportAccounts}>
+              Dışa aktar
+            </button>
+            <button className="primary-button" onClick={() => props.onAdd(firstProvider)}>
+              <Plus size={16} /> Hesap ekle
+            </button>
+          </div>
         )}
       />
       <div className="provider-grid">
@@ -996,8 +1083,8 @@ function ProvidersPage(props: {
                     </button>
                   </div>
                 ) : accounts.map((account) => {
-                  const usagePercent = account.dailyLimit
-                    ? Math.min(100, Math.round((account.todayUsed / account.dailyLimit) * 100))
+                  const usagePercent = account.usageWindowLimit
+                    ? Math.min(100, Math.round((account.usageWindowUsed / account.usageWindowLimit) * 100))
                     : 0
                   return (
                     <div className="account-card" key={account.id}>
@@ -1013,22 +1100,35 @@ function ProvidersPage(props: {
                       </div>
 
                       <div className="account-stats">
-                        <div><span>Bugün</span><strong>{formatNumber(account.todayUsed)}</strong></div>
-                        <div><span>Günlük limit</span><strong>{account.dailyLimit ? formatNumber(account.dailyLimit) : 'Sınırsız'}</strong></div>
-                        <div><span>Gecikme</span><strong>{account.health ? formatDuration(account.health.latencyMs) : '—'}</strong></div>
+                        <div><span>Son {account.usageWindowMinutes} dk</span><strong>{formatNumber(account.usageWindowUsed)}</strong></div>
+                        <div><span>Pencere limiti</span><strong>{account.usageWindowLimit ? formatNumber(account.usageWindowLimit) : 'Sınırsız'}</strong></div>
+                        <div><span>Bugün başarılı</span><strong>{formatNumber(account.todayUsed)}</strong></div>
                         <div><span>Son kullanım</span><strong>{formatRelativeTime(account.lastUsed)}</strong></div>
                       </div>
 
-                      {account.dailyLimit && (
+                      {account.usageWindowLimit && (
                         <div className="usage-progress">
-                          <div><span>Kota kullanımı</span><strong>%{usagePercent}</strong></div>
+                          <div><span>Kayan pencere kullanımı</span><strong>%{usagePercent}</strong></div>
                           <i><span style={{ width: `${usagePercent}%` }} /></i>
+                        </div>
+                      )}
+
+                      {account.usageWindowLimit
+                        && account.usageWindowUsed >= account.usageWindowLimit
+                        && account.usageWindowResetAt && (
+                        <div className="inline-warning">
+                          <Clock3 size={15} /> İlk kullanım slotu {formatRelativeTime(account.usageWindowResetAt)} geri gelecek.
                         </div>
                       )}
 
                       {account.cooldownUntil && (
                         <div className="inline-warning">
                           <Clock3 size={15} /> Devre kesici {formatRelativeTime(account.cooldownUntil)} kapanacak.
+                        </div>
+                      )}
+                      {account.identityDuplicate && (
+                        <div className="inline-warning danger">
+                          <AlertTriangle size={15} /> Bu oturum başka bir kayıtla aynı DeepSeek hesabına ait. Güvenlik için yalnız tek kayıt kullanılır.
                         </div>
                       )}
                       {account.errorMessage && (
@@ -1417,7 +1517,7 @@ function SecurityPage({
           }}>
             {([
               ['round-robin', 'Round robin', 'İstekleri aktif hesaplara sırayla dağıtır.'],
-              ['least-used', 'En az kullanılan', 'Günlük kullanımı düşük hesabı tercih eder.'],
+              ['least-used', 'En az kullanılan', 'Son kullanım penceresi daha boş hesabı tercih eder.'],
               ['failover', 'Sabit öncelik', 'İlk hesabı kullanır, sorun halinde sıradakine geçer.'],
             ] as const).map(([value, label, description]) => (
               <label className={`strategy-option ${strategy === value ? 'selected' : ''}`} key={value}>
@@ -1571,7 +1671,7 @@ function AccountPanel(props: {
 }) {
   const [name, setName] = useState(props.account?.name ?? '')
   const [email, setEmail] = useState(props.account?.email ?? '')
-  const [dailyLimit, setDailyLimit] = useState(props.account ? String(props.account.dailyLimit ?? '') : '500')
+  const [dailyLimit, setDailyLimit] = useState(props.account ? String(props.account.usageWindowLimit ?? props.account.dailyLimit ?? '') : '30')
   const [credentials, setCredentials] = useState<Record<string, string>>({})
   const [validation, setValidation] = useState<AccountHealthResult | null>(null)
   const [validationError, setValidationError] = useState<string | null>(null)
@@ -1799,7 +1899,7 @@ function AccountPanel(props: {
             <Field label="E-posta" hint="İsteğe bağlı operasyon referansı">
               <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} placeholder="hesap@example.com" />
             </Field>
-            <Field label="Günlük istek sınırı" hint={isEditing ? 'Boş değer hesap sınırını kaldırır.' : 'Hesap bazlı güvenli tavan'}>
+            <Field label="15 dakikalık istek bütçesi" hint="Eski denemeler süre doldukça kademeli çıkar; günlük kilit oluşturmaz.">
               <input type="number" min={1} max={1_000_000} value={dailyLimit} onChange={(event) => setDailyLimit(event.target.value)} />
             </Field>
           </div>
@@ -2820,6 +2920,8 @@ function readinessReasonLabel(reason: DashboardData['overview']['gateway']['read
     provider_timeout: 'DeepSeek yanıt süresi aşıldı',
     provider_protocol_changed: 'DeepSeek web protokolü kontrol edilmeli',
     no_available_account: 'Kullanılabilir hesap bulunamadı',
+    account_queue_timeout: 'DeepSeek hesap kuyruğu zaman aşımına uğradı',
+    account_usage_window_exhausted: 'Hesapların kısa dönem kullanım bütçesi doldu',
   } satisfies Record<DashboardData['overview']['gateway']['readiness']['reasonCode'], string>
   return labels[reason]
 }
@@ -2830,6 +2932,8 @@ function readinessHeadline(reason: DashboardData['overview']['gateway']['readine
   if (reason === 'provider_protocol_changed') return 'DeepSeek web bağlantısı teknik kontrol bekliyor.'
   if (reason === 'provider_timeout') return 'DeepSeek yanıt süresi operasyon sınırını aştı.'
   if (reason === 'no_available_account') return 'Trafiği karşılayacak kullanılabilir hesap yok.'
+  if (reason === 'account_queue_timeout') return 'DeepSeek hesabı yoğun; istek sırada tamamlanamadı.'
+  if (reason === 'account_usage_window_exhausted') return 'Hesap kapasitesi kısa süreliğine dinleniyor.'
   return 'DeepSeek bağlantısı geçici olarak kullanılamıyor.'
 }
 
@@ -2845,6 +2949,12 @@ function readinessDescription(reason: DashboardData['overview']['gateway']['read
   }
   if (reason === 'no_available_account') {
     return 'Hesap durumu, günlük kota ve devre kesici bilgilerini birlikte kontrol edin.'
+  }
+  if (reason === 'account_queue_timeout') {
+    return 'Ön plan taslakları arka plan analizlerinden önce çalışır; kuyruk süresi dolarsa istemci kısa süre sonra yeniden denemelidir.'
+  }
+  if (reason === 'account_usage_window_exhausted') {
+    return 'Son 15 dakikadaki eski istekler pencereden çıktıkça kapasite otomatik ve kademeli olarak geri gelir.'
   }
   return readinessReasonLabel(reason)
 }
@@ -2911,6 +3021,9 @@ function activityStatusLabel(status: RequestActivity['status']): string {
 function activityErrorLabel(code: string): string {
   const labels: Record<string, string> = {
     no_available_account: 'Kullanılabilir hesap yok',
+    account_queue_timeout: 'Hesap kuyruğu zaman aşımı',
+    account_usage_window_exhausted: 'Kısa dönem hesap bütçesi doldu',
+    background_usage_capacity_reserved: 'Ön plan için hesap kapasitesi ayrıldı',
     provider_rate_limited: 'Sağlayıcı isteği sınırladı',
     provider_account_suspended: 'Sağlayıcı hesabı askıya aldı',
     provider_authentication_failed: 'Oturum doğrulanamadı',

@@ -32,6 +32,16 @@ describe('gateway safety controls', () => {
     expect(limiter.consume(record, 62_000).allowed).toBe(true)
   })
 
+  it('isolates rate-limit windows by API scope', () => {
+    const limiter = new SlidingWindowRateLimiter()
+    const record = apiKey(2)
+
+    expect(limiter.consume(record, 1_000, 'models').allowed).toBe(true)
+    expect(limiter.consume(record, 2_000, 'models').allowed).toBe(true)
+    expect(limiter.consume(record, 3_000, 'models').allowed).toBe(false)
+    expect(limiter.consume(record, 3_000, 'chat').allowed).toBe(true)
+  })
+
   it('releases concurrency permits exactly once', () => {
     const gate = new ConcurrencyGate(1)
     const release = gate.tryAcquire()
@@ -44,7 +54,7 @@ describe('gateway safety controls', () => {
     expect(gate.tryAcquire()).toBeTypeOf('function')
   })
 
-  it('accepts text chat and rejects media, tools, and unknown request fields', () => {
+  it('accepts bounded inline media while rejecting remote media and unknown fields', () => {
     const request = (content: unknown, extra: Record<string, unknown> = {}) => ({
       model: 'test-model',
       messages: [{
@@ -58,10 +68,34 @@ describe('gateway safety controls', () => {
       model: 'test-model',
       messages: [{ role: 'user', content: 'hello' }],
     })
+    expect(parseChatRequest(request([
+      { type: 'text', text: 'Inspect this receipt.' },
+      {
+        type: 'file',
+        file: {
+          filename: 'receipt.pdf',
+          file_data: 'data:application/pdf;base64,JVBERi0xLjQKJSVFT0Y=',
+        },
+      },
+    ]))).toMatchObject({
+      messages: [{ role: 'user', content: expect.any(Array) }],
+    })
     expect(() => parseChatRequest(request([
       { type: 'image_url', image_url: { url: 'https://example.com/image.jpg' } },
     ]))).toThrow()
-    expect(() => parseChatRequest(request('hello', { tools: [] }))).toThrow()
-    expect(() => parseChatRequest(request('hello', { temperature: 0.5 }))).toThrow()
+    expect(() => parseChatRequest(request([
+      {
+        type: 'file',
+        file: {
+          filename: 'payload.svg',
+          file_data: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+        },
+      },
+    ]))).toThrow()
+    // Standard OpenAI fields are accepted for drop-in compatibility, and any
+    // further unknown field is stripped rather than rejected.
+    expect(() => parseChatRequest(request('hello', { tools: [] }))).not.toThrow()
+    expect(() => parseChatRequest(request('hello', { temperature: 0.5 }))).not.toThrow()
+    expect(() => parseChatRequest(request('hello', { some_future_field: true }))).not.toThrow()
   })
 })

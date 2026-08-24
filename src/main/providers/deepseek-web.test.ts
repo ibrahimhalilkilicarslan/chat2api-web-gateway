@@ -15,6 +15,23 @@ describe('DeepSeek current-user response inspection', () => {
     })
   })
 
+  it('captures the provider identity without requiring an email address', () => {
+    expect(inspectDeepSeekCurrentUser({
+      code: 0,
+      data: {
+        biz_code: 0,
+        biz_data: {
+          id: 'provider-user-id',
+          token: 'short-lived-access-token',
+        },
+      },
+    })).toEqual({
+      kind: 'valid',
+      accessToken: 'short-lived-access-token',
+      providerIdentity: 'provider-user-id',
+    })
+  })
+
   it('recognizes authentication errors embedded in HTTP 200 payloads', () => {
     expect(inspectDeepSeekCurrentUser({
       code: 40_003,

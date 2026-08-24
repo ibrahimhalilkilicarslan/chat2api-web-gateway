@@ -6,7 +6,7 @@ export const deepseekConfig: BuiltinProviderConfig = {
   type: 'builtin',
   authType: 'userToken',
   enabled: true,
-  description: 'DeepSeek web oturumunu izole ve metin tabanlı Chat Completions API yüzeyine dönüştürür.',
+  description: 'DeepSeek web oturumunu izole, metin ve sınırlı inline dosya destekli Chat Completions API yüzeyine dönüştürür.',
   supportedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
   credentialFields: [
     {

@@ -2,10 +2,19 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { RuntimeConfig } from '../../core/config.js'
 import { registerSecret } from '../../core/security/redaction.js'
-import { BUILTIN_PROVIDERS, type Account } from '../../main/store/types.js'
+import {
+  BUILTIN_PROVIDERS,
+  type Account,
+  type Provider,
+} from '../../main/store/types.js'
 import { storeManager, type ApiScope } from '../../main/store/store.js'
 import type { ConcurrencyGate } from '../gateway/concurrency.js'
 import type { ProviderRoutingEngine } from '../gateway/router.js'
+import {
+  exportAccounts,
+  importAccounts,
+  MIN_EXPORT_PASSPHRASE,
+} from '../operations/accountTransfer.js'
 import { deriveOperationalReadiness } from '../operations/readiness.js'
 import {
   checkProviderAccount,
@@ -120,8 +129,9 @@ const settingsSchema = z.object({
   loadBalanceStrategy: z.enum(['round-robin', 'least-used', 'failover']).optional(),
 }).strict()
 
-function safeAccount(account: Account, cooldownUntil?: number) {
+function safeAccount(account: Account, usageWindowMs: number, cooldownUntil?: number) {
   const health = accountHealthRegistry.get(account.id)
+  const usage = storeManager.getAccountUsageWindow(account.id, usageWindowMs)
   return {
     id: account.id,
     providerId: account.providerId,
@@ -136,6 +146,10 @@ function safeAccount(account: Account, cooldownUntil?: number) {
     requestCount: account.requestCount ?? 0,
     dailyLimit: account.dailyLimit,
     todayUsed: account.todayUsed ?? 0,
+    usageWindowLimit: account.dailyLimit,
+    usageWindowUsed: usage.used,
+    usageWindowMinutes: Math.round(usageWindowMs / 60_000),
+    usageWindowResetAt: usage.resetAt ?? null,
     health: health
       ? {
           healthy: health.healthy,
@@ -147,7 +161,20 @@ function safeAccount(account: Account, cooldownUntil?: number) {
           retryAt: health.retryAt,
         }
       : null,
+    identityDuplicate: accountHealthRegistry.hasDuplicateIdentity(account.id),
     cooldownUntil: cooldownUntil && cooldownUntil > Date.now() ? cooldownUntil : null,
+  }
+}
+
+function publicHealth(health: AccountHealthResult) {
+  return {
+    healthy: health.healthy,
+    status: health.status,
+    code: health.code,
+    message: health.message,
+    checkedAt: health.checkedAt,
+    latencyMs: health.latencyMs,
+    retryAt: health.retryAt,
   }
 }
 
@@ -209,6 +236,24 @@ export async function registerAdminRoutes(
   accountHealthChecker: AccountHealthChecker = checkProviderAccount,
 ): Promise<void> {
   const deepSeekLinkSessions = new DeepSeekLinkSessionRegistry()
+  const findDuplicateProviderAccount = async (
+    provider: Provider,
+    health: AccountHealthResult,
+    excludeAccountId?: string,
+  ): Promise<Account | undefined> => {
+    if (!health.identityFingerprint) return undefined
+    const accounts = storeManager.getAccountsByProviderId(provider.id, true)
+    for (const account of accounts) {
+      if (account.id === excludeAccountId) continue
+      let existingHealth = accountHealthRegistry.get(account.id)
+      if (!existingHealth?.identityFingerprint) {
+        const refreshed = await accountHealthChecker(provider, account)
+        existingHealth = accountHealthRegistry.record(account.id, refreshed)
+      }
+      if (existingHealth.identityFingerprint === health.identityFingerprint) return account
+    }
+    return undefined
+  }
 
   app.post('/admin/api/login', {
     config: {
@@ -349,7 +394,7 @@ export async function registerAdminRoutes(
     return reply.send(
       storeManager
         .getAccounts(false)
-        .map((account) => safeAccount(account, cooldowns.get(account.id))),
+        .map((account) => safeAccount(account, config.accountUsageWindowMs, cooldowns.get(account.id))),
     )
   })
 
@@ -535,6 +580,25 @@ export async function registerAdminRoutes(
         },
       })
     }
+    const duplicateAccount = await findDuplicateProviderAccount(provider, health)
+    if (duplicateAccount) {
+      const message = 'This DeepSeek identity is already registered.'
+      deepSeekLinkSessions.fail(claim.id, 'duplicate_provider_identity', message)
+      storeManager.addAuditLog({
+        actor: connectorActor,
+        action: 'account.link.complete',
+        targetType: 'provider',
+        targetId: 'deepseek',
+        outcome: 'failure',
+        metadata: { healthCode: 'duplicate_provider_identity', transport },
+      })
+      return reply.code(409).send({
+        error: {
+          code: 'duplicate_provider_identity',
+          message,
+        },
+      })
+    }
 
     try {
       storeManager.addAccount(account)
@@ -659,7 +723,13 @@ export async function registerAdminRoutes(
         healthCode: health.code,
       },
     })
-    return reply.code(health.healthy ? 200 : 422).send(health)
+    const duplicateAccount = health.healthy
+      ? await findDuplicateProviderAccount(provider, health)
+      : undefined
+    return reply.code(health.healthy ? 200 : 422).send({
+      ...publicHealth(health),
+      identityDuplicate: Boolean(duplicateAccount),
+    })
   })
 
   app.post('/admin/api/accounts/:id/test', {
@@ -691,6 +761,7 @@ export async function registerAdminRoutes(
           : account.status,
       errorMessage: health.healthy ? undefined : health.message,
     })
+    if (health.healthy) routing.markAccountHealthy(account.id)
     storeManager.addAuditLog({
       actor: 'admin',
       action: 'account.health_check',
@@ -709,8 +780,9 @@ export async function registerAdminRoutes(
       .find((entry) => entry.accountId === account.id)
       ?.openedUntil
     return reply.send({
-      ...health,
-      account: safeAccount(current, cooldownUntil),
+      ...publicHealth(health),
+      identityDuplicate: accountHealthRegistry.hasDuplicateIdentity(account.id),
+      account: safeAccount(current, config.accountUsageWindowMs, cooldownUntil),
     })
   })
 
@@ -773,6 +845,26 @@ export async function registerAdminRoutes(
         },
       })
     }
+    const duplicateAccount = await findDuplicateProviderAccount(provider, health)
+    if (duplicateAccount) {
+      storeManager.addAuditLog({
+        actor: 'admin',
+        action: 'account.create',
+        targetType: 'provider',
+        targetId: provider.id,
+        outcome: 'failure',
+        metadata: {
+          providerId: provider.id,
+          healthCode: 'duplicate_provider_identity',
+        },
+      })
+      return reply.code(409).send({
+        error: {
+          code: 'duplicate_provider_identity',
+          message: 'This DeepSeek identity is already registered.',
+        },
+      })
+    }
     storeManager.addAccount(account)
     accountHealthRegistry.record(account.id, health)
     storeManager.addAuditLog({
@@ -783,7 +875,7 @@ export async function registerAdminRoutes(
       outcome: 'success',
       metadata: { providerId: account.providerId },
     })
-    return reply.code(201).send(safeAccount(account))
+    return reply.code(201).send(safeAccount(account, config.accountUsageWindowMs))
   })
 
   app.patch('/admin/api/accounts/:id', { preHandler: adminAuth.requireMutation }, async (request, reply) => {
@@ -836,13 +928,30 @@ export async function registerAdminRoutes(
           },
         })
       }
+      const duplicateAccount = await findDuplicateProviderAccount(
+        provider,
+        validatedHealth,
+        id.data,
+      )
+      if (duplicateAccount) {
+        return reply.code(409).send({
+          error: {
+            code: 'duplicate_provider_identity',
+            message: 'This DeepSeek identity is already registered.',
+          },
+        })
+      }
     }
-    const updated = storeManager.updateAccount(id.data, {
-      ...body.data,
-      credentials,
-      email: body.data.email || undefined,
-      dailyLimit: body.data.dailyLimit ?? undefined,
-    })
+    const updates: Partial<Account> = {
+      ...(body.data.name === undefined ? {} : { name: body.data.name }),
+      ...(body.data.status === undefined ? {} : { status: body.data.status }),
+      ...(body.data.credentials === undefined ? {} : { credentials }),
+      ...(body.data.email === undefined ? {} : { email: body.data.email || undefined }),
+      ...(body.data.dailyLimit === undefined
+        ? {}
+        : { dailyLimit: body.data.dailyLimit ?? undefined }),
+    }
+    const updated = storeManager.updateAccount(id.data, updates)
     if (validatedHealth) accountHealthRegistry.record(id.data, validatedHealth)
     storeManager.addAuditLog({
       actor: 'admin',
@@ -852,7 +961,7 @@ export async function registerAdminRoutes(
       outcome: 'success',
       metadata: { providerId: current.providerId },
     })
-    return reply.send(updated ? safeAccount(updated) : null)
+    return reply.send(updated ? safeAccount(updated, config.accountUsageWindowMs) : null)
   })
 
   app.delete('/admin/api/accounts/:id', { preHandler: adminAuth.requireMutation }, async (request, reply) => {
@@ -872,6 +981,125 @@ export async function registerAdminRoutes(
     })
     accountHealthRegistry.delete(id.data)
     return reply.code(204).send()
+  })
+
+  // Export all DeepSeek accounts into a portable, passphrase-encrypted bundle
+  // for backup or migration to another deployment (independent of the master key).
+  app.post('/admin/api/accounts/export', {
+    preHandler: adminAuth.requireMutation,
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const parsed = z.object({
+      passphrase: z.string().min(MIN_EXPORT_PASSPHRASE).max(256),
+    }).safeParse(request.body)
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: {
+          code: 'invalid_request',
+          message: `A passphrase of at least ${MIN_EXPORT_PASSPHRASE} characters is required.`,
+        },
+      })
+    }
+    registerSecret(parsed.data.passphrase)
+    const portable = storeManager.getAccountsByProviderId('deepseek', true).map((account) => {
+      for (const value of Object.values(account.credentials)) registerSecret(value)
+      return {
+        providerId: account.providerId,
+        name: account.name,
+        email: account.email,
+        credentials: account.credentials,
+      }
+    })
+    const bundle = exportAccounts(portable, parsed.data.passphrase)
+    storeManager.addAuditLog({
+      actor: 'admin',
+      action: 'account.export',
+      targetType: 'provider',
+      targetId: 'deepseek',
+      outcome: 'success',
+      metadata: { count: portable.length },
+    })
+    return reply.send(bundle)
+  })
+
+  // Import accounts from an encrypted export bundle. Each account is credential
+  // validated, health checked, and de-duplicated before being added.
+  app.post('/admin/api/accounts/import', {
+    preHandler: adminAuth.requireMutation,
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const parsed = z.object({
+      passphrase: z.string().min(1).max(256),
+      bundle: z.unknown(),
+    }).safeParse(request.body)
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: { code: 'invalid_request', message: 'A passphrase and export bundle are required.' },
+      })
+    }
+    registerSecret(parsed.data.passphrase)
+    let portable
+    try {
+      portable = importAccounts(parsed.data.bundle, parsed.data.passphrase)
+    } catch (error) {
+      return reply.code(400).send({
+        error: { code: 'import_failed', message: (error as Error).message },
+      })
+    }
+    const provider = storeManager.getProviderById('deepseek')
+    if (!provider) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Provider not found.' } })
+    }
+
+    const results: Array<{ name: string; status: string }> = []
+    let added = 0
+    for (const entry of portable) {
+      if (entry.providerId !== 'deepseek') {
+        results.push({ name: entry.name, status: 'skipped_provider' })
+        continue
+      }
+      for (const value of Object.values(entry.credentials)) registerSecret(value)
+      const credentials = normalizeProviderCredentials('deepseek', entry.credentials)
+      if (validateCredentialFields('deepseek', credentials, false)) {
+        results.push({ name: entry.name, status: 'invalid' })
+        continue
+      }
+      const now = Date.now()
+      const account: Account = {
+        id: storeManager.generateId(),
+        providerId: 'deepseek',
+        name: entry.name,
+        email: entry.email || undefined,
+        credentials,
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+        requestCount: 0,
+        todayUsed: 0,
+      }
+      const health = await accountHealthChecker(provider, account)
+      if (!health.healthy) {
+        results.push({ name: entry.name, status: 'unhealthy' })
+        continue
+      }
+      if (await findDuplicateProviderAccount(provider, health)) {
+        results.push({ name: entry.name, status: 'duplicate' })
+        continue
+      }
+      storeManager.addAccount(account)
+      accountHealthRegistry.record(account.id, health)
+      added += 1
+      results.push({ name: entry.name, status: 'added' })
+    }
+    storeManager.addAuditLog({
+      actor: 'admin',
+      action: 'account.import',
+      targetType: 'provider',
+      targetId: 'deepseek',
+      outcome: 'success',
+      metadata: { added, total: portable.length },
+    })
+    return reply.send({ added, total: portable.length, results })
   })
 
   app.addHook('onClose', async () => {

@@ -6,20 +6,28 @@ import {
 import {
   DeepSeekProviderError,
   DeepSeekStreamHandler,
+  type DeepSeekStreamOutcome,
   providerErrorFromJsonResponse,
 } from './adapters/deepseek-stream'
 import { parseRetryAfterMs } from './retry-after'
 import type {
   ChatCompletionRequest,
   ForwardResult,
+  ForwardStreamOutcome,
   ProxyContext,
 } from './types'
 
 export class RequestForwarder {
   private requestTimeoutMs = 120_000
+  private sessionTtlMs = 300_000
 
-  configure(options: { requestTimeoutMs: number }): void {
+  configure(options: { requestTimeoutMs: number; sessionTtlMs?: number }): void {
     this.requestTimeoutMs = options.requestTimeoutMs
+    this.sessionTtlMs = options.sessionTtlMs ?? this.sessionTtlMs
+  }
+
+  getState(): { deepSeekSessions: ReturnType<typeof DeepSeekAdapter.sessionPoolState> } {
+    return { deepSeekSessions: DeepSeekAdapter.sessionPoolState() }
   }
 
   async forwardChatCompletion(
@@ -42,6 +50,7 @@ export class RequestForwarder {
 
     const adapter = new DeepSeekAdapter(provider, account, {
       requestTimeoutMs: this.requestTimeoutMs,
+      sessionTtlMs: this.sessionTtlMs,
     })
 
     try {
@@ -51,18 +60,37 @@ export class RequestForwarder {
         web_search: request.web_search,
         reasoning_effort: request.reasoning_effort,
       }, context.signal)
-      const cleanup = async () => {
-        await adapter.deleteSession(sessionId)
+      const finalizeSession = async (outcome: DeepSeekStreamOutcome) => {
+        if (
+          outcome.status === 'success'
+          || outcome.errorCode === 'provider_account_suspended'
+          || outcome.errorCode === 'provider_rate_limited'
+          || outcome.errorCode === 'provider_expert_busy'
+        ) {
+          await adapter.releaseSession(sessionId)
+          return
+        }
+        await adapter.invalidateSession(sessionId)
       }
 
       if (response.status >= 400) {
-        await cleanup()
+        let body = ''
+        try {
+          body = await readBoundedProviderBody(response.data)
+        } catch (error) {
+          await finalizeSession({ status: 'interrupted' })
+          throw error
+        }
+        const providerError = providerErrorFromJsonResponse(body)
+        const code = providerError?.code ?? statusCode(response.status)
+        await finalizeSession({ status: 'provider_error', errorCode: code })
         return {
           success: false,
-          status: response.status,
-          code: statusCode(response.status),
-          retryAfterMs: parseRetryAfterMs(response.headers?.['retry-after']),
-          error: 'DeepSeek rejected the request.',
+          status: providerError?.status ?? response.status,
+          code,
+          retryAfterMs: providerError?.retryAfterMs
+            ?? parseRetryAfterMs(response.headers?.['retry-after']),
+          error: providerError?.message ?? 'DeepSeek rejected the request.',
           latency: Date.now() - startedAt,
         }
       }
@@ -72,11 +100,16 @@ export class RequestForwarder {
         let body = ''
         try {
           body = await readBoundedProviderBody(response.data)
-        } finally {
-          await cleanup()
+        } catch (error) {
+          await finalizeSession({ status: 'interrupted' })
+          throw error
         }
         const providerError = providerErrorFromJsonResponse(body)
-        if (providerError) throw providerError
+        if (providerError) {
+          await finalizeSession({ status: 'provider_error', errorCode: providerError.code })
+          throw providerError
+        }
+        await finalizeSession({ status: 'provider_error', errorCode: 'provider_protocol_changed' })
         throw new DeepSeekProviderError(
           'provider_protocol_changed',
           502,
@@ -86,7 +119,7 @@ export class RequestForwarder {
 
       const handler = new DeepSeekStreamHandler(
         request.model,
-        cleanup,
+        finalizeSession,
         request.web_search,
         request.reasoning_effort,
       )
@@ -96,6 +129,7 @@ export class RequestForwarder {
           success: true,
           status: 200,
           stream: handler.handleStream(response.data),
+          streamOutcome: handler.outcome.then(mapStreamOutcome),
           latency: Date.now() - startedAt,
         }
       }
@@ -121,6 +155,18 @@ export class RequestForwarder {
   }
 }
 
+function mapStreamOutcome(outcome: DeepSeekStreamOutcome): ForwardStreamOutcome {
+  if (outcome.status === 'success') return { success: true, status: 200 }
+  return {
+    success: false,
+    status: outcome.statusCode ?? 502,
+    code: outcome.errorCode ?? (outcome.status === 'interrupted'
+      ? 'stream_interrupted'
+      : 'provider_response_error'),
+    ...(outcome.retryAfterMs === undefined ? {} : { retryAfterMs: outcome.retryAfterMs }),
+  }
+}
+
 function statusCode(status: number): string {
   if (status === 401 || status === 403) return 'provider_authentication_failed'
   if (status === 408 || status === 504) return 'provider_timeout'
@@ -140,7 +186,7 @@ function normalizeError(error: unknown): {
       code: error.code,
       status: error.status,
       message: error.message,
-      ...(error instanceof DeepSeekProviderError && error.retryAfterMs !== undefined
+      ...(error.retryAfterMs !== undefined
         ? { retryAfterMs: error.retryAfterMs }
         : {}),
     }

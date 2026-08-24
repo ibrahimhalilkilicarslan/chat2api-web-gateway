@@ -5,19 +5,44 @@
 - Provider ID: `deepseek`
 - Fixed base: `https://chat.deepseek.com/api`
 - Credential: DeepSeek browser user token
-- Input: text-only `system`, `user`, and `assistant` messages
+- Input: text `system`/`assistant` messages and text or bounded inline-media
+  `user` messages
 - Optional controls: `web_search`, `reasoning_effort`
 - Output: non-stream JSON or OpenAI-style SSE
 
-Images, files, tools, JSON mode, arbitrary sampling parameters, official API
-keys, and legacy completion/Responses routes are unsupported and rejected.
+PNG, JPEG, WebP, and PDF attachments are accepted only as inline base64 `data:`
+URLs. The adapter validates decoded size and magic bytes, obtains a dedicated
+upload PoW challenge, posts to the fixed DeepSeek file endpoint, waits for the
+file to become ready, and forwards its ID in `ref_file_ids`. It never fetches a
+remote URL or reads a caller-supplied local path.
 
-## Isolation
+The web file endpoint accepts the default model pipeline but rejects direct
+`expert`/`deepseek-v4-pro` file references. Clients that require a Pro final
+answer must first extract the attachment with `deepseek-v4-flash`, treat that
+output as untrusted evidence, and send only the bounded extraction result to a
+separate Pro request. Media requests use a fresh, non-reusable upstream session
+so stale file references cannot leak between sequential requests.
 
-Every gateway request creates a fresh DeepSeek conversation. The conversation is
-not reused for another client or request and is deleted after the output ends,
-fails, times out, or is abandoned. Context is supplied only by the caller's
-current `messages` array.
+Tools, arbitrary file types, JSON mode, arbitrary sampling parameters, official
+API keys, and legacy completion/Responses routes are unsupported and rejected.
+
+The file endpoint is an undocumented DeepSeek web protocol. Extracted/OCR data
+is untrusted and is not payment verification. No verified upstream file-delete
+operation is currently used, so DeepSeek account retention rules apply.
+
+## Session lifecycle and isolation
+
+The gateway leases an upstream DeepSeek conversation for one request at a time.
+After a successful response, an idle lease can be reused for up to
+`CHAT2API_DEEPSEEK_SESSION_TTL_MS` (five minutes by default). The same upstream
+conversation is never used by concurrent requests. Every completion is sent
+with a null parent and context is supplied by the caller's current `messages`
+array. Expired or invalid leases are retired with best-effort upstream cleanup.
+
+Set `CHAT2API_DEEPSEEK_SESSION_TTL_MS=0` when strict fresh-conversation isolation
+is more important than minimizing upstream session churn. Because the DeepSeek
+web protocol is undocumented, a controlled isolation smoke test is required
+before enabling lease reuse in a multi-client deployment.
 
 Gateway response IDs are random `chatcmpl_...` values. DeepSeek session IDs,
 message IDs, raw payloads, tokens, and cookies are not exposed or persisted.
@@ -43,8 +68,17 @@ The current-user response can also report `chat.is_muted` with a provider
 supplied `mute_until` timestamp. The gateway records this as
 `provider_account_suspended`, removes the account from active routing, exposes
 only the sanitized status and retry time to the admin console, and allows a
-later health check to restore the account after the provider clears the hold.
+provider-timed health check to restore the account after the provider clears the
+hold. The regular scheduled monitor remains a fallback.
 The raw provider payload is never returned or logged.
+
+## Queue priority
+
+DeepSeek web accounts default to one concurrent request. Excess work waits in a
+bounded queue instead of immediately failing with `no_available_account`.
+Authenticated clients can mark non-interactive work with
+`X-Chat2API-Priority: background`; omitted or `foreground` requests are served
+before queued background work. Priority never interrupts an in-flight request.
 
 ## Account onboarding
 

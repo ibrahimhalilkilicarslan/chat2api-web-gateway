@@ -19,6 +19,8 @@ export type OperationalReadinessReason =
   | 'provider_timeout'
   | 'provider_protocol_changed'
   | 'no_available_account'
+  | 'account_queue_timeout'
+  | 'account_usage_window_exhausted'
 
 export interface OperationalReadiness {
   status: OperationalReadinessStatus
@@ -58,6 +60,8 @@ const PROVIDER_FAILURE_CODES = new Set<OperationalReadinessReason>([
   'provider_timeout',
   'provider_protocol_changed',
   'no_available_account',
+  'account_queue_timeout',
+  'account_usage_window_exhausted',
 ])
 
 const RECENT_FAILURE_WINDOW_MS = 15 * 60_000

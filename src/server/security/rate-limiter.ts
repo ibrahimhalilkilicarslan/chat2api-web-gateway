@@ -15,14 +15,15 @@ export class SlidingWindowRateLimiter {
   private readonly windows = new Map<string, WindowState>()
   private readonly windowMs = 60_000
 
-  consume(record: StoredApiKey, now = Date.now()): RateLimitResult {
+  consume(record: StoredApiKey, now = Date.now(), bucket = 'default'): RateLimitResult {
+    const windowKey = `${record.id}:${bucket}`
     const cutoff = now - this.windowMs
-    const state = this.windows.get(record.id) ?? { timestamps: [] }
+    const state = this.windows.get(windowKey) ?? { timestamps: [] }
     const timestamps = state.timestamps.filter((timestamp) => timestamp > cutoff)
     const resetAt = timestamps[0] ? timestamps[0] + this.windowMs : now + this.windowMs
 
     if (timestamps.length >= record.requestsPerMinute) {
-      this.windows.set(record.id, { timestamps })
+      this.windows.set(windowKey, { timestamps })
       return {
         allowed: false,
         limit: record.requestsPerMinute,
@@ -32,7 +33,7 @@ export class SlidingWindowRateLimiter {
     }
 
     timestamps.push(now)
-    this.windows.set(record.id, { timestamps })
+    this.windows.set(windowKey, { timestamps })
     return {
       allowed: true,
       limit: record.requestsPerMinute,

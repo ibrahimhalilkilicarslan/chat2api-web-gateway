@@ -5,21 +5,46 @@ import type {
   AccountSelection,
   ChatCompletionRequest,
   ForwardResult,
+  ForwardStreamOutcome,
   ProxyContext,
 } from '../../main/proxy/types.js'
 import { storeManager } from '../../main/store/store.js'
+import { ConcurrencyGate } from './concurrency.js'
 import { enforceIdleTimeout, primeStream, type PrimedStream } from './streaming.js'
 
 interface CircuitState {
   failures: number
   openedUntil: number
+  code?: string
+}
+
+interface ReservedSelection {
+  selection: AccountSelection
+  release: () => void
+}
+
+interface AccountFailureOutcome {
+  status: number
+  code: string
+  retryAfterMs?: number
+  latencyMs: number
+}
+
+export interface ProviderRoutingHooks {
+  getAccountIdentityFingerprint?: (accountId: string) => string | undefined
+  onAccountSuspended?: (input: {
+    accountId: string
+    message: string
+    retryAt?: number
+    latencyMs: number
+  }) => void
 }
 
 export interface RoutedResult {
   result: ForwardResult
   selection: AccountSelection
   primed?: PrimedStream
-  release: (success: boolean) => void
+  release: (success: boolean, failure?: ForwardStreamOutcome) => void
   attempts: number
 }
 
@@ -50,7 +75,7 @@ const defaultProviderRuntime: ProviderRuntimeAdapter = {
 }
 
 export class ProviderRoutingEngine {
-  private readonly activeByAccount = new Map<string, number>()
+  private readonly accountGates = new Map<string, ConcurrencyGate>()
   private readonly circuits = new Map<string, CircuitState>()
   private roundRobinCursor = 0
 
@@ -58,15 +83,15 @@ export class ProviderRoutingEngine {
     private readonly runtimeConfig: RuntimeConfig,
     private readonly providerRuntime: ProviderRuntimeAdapter = defaultProviderRuntime,
     private readonly store: typeof storeManager = storeManager,
+    private readonly hooks: ProviderRoutingHooks = {},
   ) {}
 
   async forward(
     request: ChatCompletionRequest,
     context: ProxyContext,
   ): Promise<RoutedResult | RoutingFailure> {
-    const candidates = this.orderCandidates(this.getCandidates(request))
-    if (candidates.length === 0) {
-      return { status: 503, code: 'no_available_account' }
+    if (this.getCandidates(request).length === 0) {
+      return this.unavailableRoutingFailure(request)
     }
 
     let attempts = 0
@@ -75,8 +100,24 @@ export class ProviderRoutingEngine {
     let rateLimitRetryAt: number | undefined
     let suspensionRetryAt: number | undefined
 
-    for (const selection of candidates) {
-      if (!this.tryReserve(selection.account.id)) continue
+    const attemptedAccounts = new Set<string>()
+    while (true) {
+      const candidates = this.orderCandidates(this.getCandidates(request))
+        .filter((selection) => !attemptedAccounts.has(selection.account.id))
+      if (candidates.length === 0) break
+
+      const reserved = await this.reserveCandidate(request, candidates, context)
+      if (reserved && 'code' in reserved) {
+        if (attempts > 0) break
+        return reserved
+      }
+      if (!reserved) {
+        return context.signal?.aborted
+          ? { status: 499, code: 'provider_request_cancelled' }
+          : { status: 503, code: 'account_queue_timeout', retryAfterSeconds: 1 }
+      }
+      const { selection, release: releaseAccount } = reserved
+      attemptedAccounts.add(selection.account.id)
       attempts += 1
       const result = await this.providerRuntime.forwardChatCompletion(
         request,
@@ -90,30 +131,51 @@ export class ProviderRoutingEngine {
       )
 
       if (!result.success) {
-        this.releaseAccount(selection.account.id)
+        releaseAccount()
         lastStatus = result.status ?? 502
         lastCode = result.code ?? statusCode(lastStatus)
-        const circuit = this.recordFailure(
-          selection.account.id,
-          lastStatus,
-          result.retryAfterMs,
-        )
+        if (lastCode === 'invalid_media_input') {
+          return { status: lastStatus, code: lastCode }
+        }
+        if (lastCode === 'provider_expert_busy') {
+          const circuit = this.recordFailure(
+            selection.account.id,
+            lastStatus,
+            result.retryAfterMs,
+            lastCode,
+          )
+          const hasAlternative = attempts < 2 && this.getCandidates(request)
+            .some((candidate) => !attemptedAccounts.has(candidate.account.id))
+          if (hasAlternative) continue
+          return {
+            status: 503,
+            code: lastCode,
+            retryAfterSeconds: Math.max(
+              1,
+              Math.ceil((circuit.openedUntil - Date.now()) / 1000),
+            ),
+          }
+        }
+        const circuit = this.handleAccountFailure(selection, {
+          status: lastStatus,
+          code: lastCode,
+          retryAfterMs: result.retryAfterMs,
+          latencyMs: result.latency ?? 0,
+        })
         if (lastStatus === 429 && circuit.openedUntil > 0) {
           rateLimitRetryAt = rateLimitRetryAt === undefined
             ? circuit.openedUntil
             : Math.min(rateLimitRetryAt, circuit.openedUntil)
         }
-        if (lastCode === 'provider_account_suspended' && result.retryAfterMs !== undefined) {
-          const retryAt = Date.now() + result.retryAfterMs
-          suspensionRetryAt = suspensionRetryAt === undefined
-            ? retryAt
-            : Math.min(suspensionRetryAt, retryAt)
-        }
-        if (lastStatus === 401 || lastStatus === 403) {
-          this.store.updateAccount(selection.account.id, {
-            status: 'error',
-            errorMessage: 'Provider authentication requires attention.',
-          })
+        if (lastCode === 'provider_account_suspended') {
+          const retryAt = result.retryAfterMs === undefined
+            ? undefined
+            : Date.now() + result.retryAfterMs
+          if (retryAt !== undefined) {
+            suspensionRetryAt = suspensionRetryAt === undefined
+              ? retryAt
+              : Math.min(suspensionRetryAt, retryAt)
+          }
         }
         if (!canFailOver(lastStatus)) break
         continue
@@ -122,8 +184,8 @@ export class ProviderRoutingEngine {
       let primed: PrimedStream | undefined
       if (request.stream) {
         if (!result.stream) {
-          this.releaseAccount(selection.account.id)
-          this.recordFailure(selection.account.id, 502)
+          releaseAccount()
+          this.recordFailure(selection.account.id, 502, undefined, 'provider_protocol_changed')
           lastCode = 'provider_protocol_changed'
           continue
         }
@@ -139,8 +201,8 @@ export class ProviderRoutingEngine {
           )
         } catch {
           ;(result.stream as Readable).destroy()
-          this.releaseAccount(selection.account.id)
-          this.recordFailure(selection.account.id, 504)
+          releaseAccount()
+          this.recordFailure(selection.account.id, 504, undefined, 'provider_timeout')
           lastStatus = 504
           lastCode = 'provider_timeout'
           continue
@@ -153,10 +215,10 @@ export class ProviderRoutingEngine {
         selection,
         primed,
         attempts,
-        release: (success) => {
+        release: (success, failure) => {
           if (released) return
           released = true
-          this.releaseAccount(selection.account.id)
+          releaseAccount()
           if (success) {
             this.recordSuccess(selection.account.id)
             this.store.updateAccount(selection.account.id, {
@@ -166,8 +228,14 @@ export class ProviderRoutingEngine {
               status: 'active',
               errorMessage: undefined,
             })
-          } else {
-            this.recordFailure(selection.account.id, 502)
+          } else if (failure?.code !== 'provider_expert_busy') {
+            const failureStatus = failure?.status ?? 502
+            this.handleAccountFailure(selection, {
+              status: failureStatus,
+              code: failure?.code ?? statusCode(failureStatus),
+              retryAfterMs: failure?.retryAfterMs,
+              latencyMs: result.latency ?? 0,
+            })
           }
         },
       }
@@ -196,20 +264,32 @@ export class ProviderRoutingEngine {
 
   getState(): {
     accountConcurrency: Array<{ accountId: string; active: number }>
-    openCircuits: Array<{ accountId: string; failures: number; openedUntil: number }>
+    accountQueue: Array<{ accountId: string; foreground: number; background: number }>
+    openCircuits: Array<{ accountId: string; failures: number; openedUntil: number; code?: string }>
+    deepSeekSessions: ReturnType<typeof requestForwarder.getState>['deepSeekSessions']
   } {
     const now = Date.now()
     return {
-      accountConcurrency: [...this.activeByAccount.entries()]
-        .map(([accountId, active]) => ({ accountId, active })),
+      accountConcurrency: [...this.accountGates.entries()]
+        .filter(([, gate]) => gate.getActive() > 0)
+        .map(([accountId, gate]) => ({ accountId, active: gate.getActive() })),
+      accountQueue: [...this.accountGates.entries()]
+        .map(([accountId, gate]) => ({ accountId, ...gate.getQueueState() }))
+        .filter((entry) => entry.foreground > 0 || entry.background > 0),
       openCircuits: [...this.circuits.entries()]
         .filter(([, state]) => state.openedUntil > now)
         .map(([accountId, state]) => ({
           accountId,
           failures: state.failures,
           openedUntil: state.openedUntil,
+          code: state.code,
         })),
+      deepSeekSessions: requestForwarder.getState().deepSeekSessions,
     }
+  }
+
+  markAccountHealthy(accountId: string): void {
+    this.recordSuccess(accountId)
   }
 
   private getCandidates(request: ChatCompletionRequest): AccountSelection[] {
@@ -217,16 +297,101 @@ export class ProviderRoutingEngine {
     if (!provider?.enabled || !this.providerSupportsModel(provider, request.model)) return []
 
     const now = Date.now()
+    const seenProviderIdentities = new Set<string>()
     return this.store.getAccountsByProviderId('deepseek', true)
       .filter((account) => account.status === 'active')
-      .filter((account) => !account.dailyLimit || (account.todayUsed ?? 0) < account.dailyLimit)
-      .filter((account) => (this.activeByAccount.get(account.id) ?? 0) < this.runtimeConfig.accountConcurrency)
+      .map((account) => {
+        const usage = this.store.getAccountUsageWindow(
+          account.id,
+          this.runtimeConfig.accountUsageWindowMs,
+          now,
+        )
+        return {
+          ...account,
+          usageWindowUsed: usage.used,
+          usageWindowResetAt: usage.resetAt,
+        }
+      })
+      .filter((account) => !account.dailyLimit || (account.usageWindowUsed ?? 0) < account.dailyLimit)
       .filter((account) => (this.circuits.get(account.id)?.openedUntil ?? 0) <= now)
+      .filter((account) => {
+        const fingerprint = this.hooks.getAccountIdentityFingerprint?.(account.id)
+        if (!fingerprint) return true
+        if (seenProviderIdentities.has(fingerprint)) return false
+        seenProviderIdentities.add(fingerprint)
+        return true
+      })
       .map((account) => ({
         provider,
         account,
         actualModel: this.mapModel(request.model, provider),
       }))
+  }
+
+  private unavailableRoutingFailure(request: ChatCompletionRequest): RoutingFailure {
+    const provider = this.store.getProviderById('deepseek')
+    if (!provider?.enabled || !this.providerSupportsModel(provider, request.model)) {
+      return { status: 503, code: 'no_available_account' }
+    }
+
+    const now = Date.now()
+    const activeAccounts = this.store.getAccountsByProviderId('deepseek', true)
+      .filter((account) => account.status === 'active')
+      .map((account) => {
+        const usage = this.store.getAccountUsageWindow(
+          account.id,
+          this.runtimeConfig.accountUsageWindowMs,
+          now,
+        )
+        return {
+          ...account,
+          usageWindowUsed: usage.used,
+          usageWindowResetAt: usage.resetAt,
+        }
+      })
+
+    const otherwiseEligible = activeAccounts
+      .filter((account) => !account.dailyLimit || (account.usageWindowUsed ?? 0) < account.dailyLimit)
+
+    if (activeAccounts.length > 0 && otherwiseEligible.length === 0) {
+      const retryAt = activeAccounts
+        .map((account) => account.usageWindowResetAt)
+        .filter((value): value is number => typeof value === 'number' && value > now)
+        .sort((left, right) => left - right)[0]
+      return {
+        status: 429,
+        code: 'account_usage_window_exhausted',
+        retryAfterSeconds: Math.max(
+          1,
+          Math.ceil(((retryAt ?? now + this.runtimeConfig.accountUsageWindowMs) - now) / 1000),
+        ),
+      }
+    }
+
+    if (otherwiseEligible.length === 0) {
+      return { status: 503, code: 'no_available_account' }
+    }
+
+    const activeCircuits = otherwiseEligible
+      .map((account) => this.circuits.get(account.id))
+      .filter((circuit): circuit is CircuitState => Boolean(circuit && circuit.openedUntil > now))
+
+    if (activeCircuits.length !== otherwiseEligible.length) {
+      return { status: 503, code: 'no_available_account' }
+    }
+
+    const earliest = [...activeCircuits].sort((left, right) => left.openedUntil - right.openedUntil)[0]
+    const code = earliest?.code || 'provider_unavailable'
+    const status = code === 'provider_rate_limited'
+      ? 429
+      : code === 'provider_timeout'
+        ? 504
+        : 503
+    return {
+      status,
+      code,
+      retryAfterSeconds: Math.max(1, Math.ceil((earliest.openedUntil - now) / 1000)),
+    }
   }
 
   private providerSupportsModel(
@@ -255,7 +420,7 @@ export class ProviderRoutingEngine {
     const config = this.store.getConfig()
     const sorted = [...candidates].sort((left, right) => {
       if (config.loadBalanceStrategy === 'least-used') {
-        return (left.account.todayUsed ?? 0) - (right.account.todayUsed ?? 0)
+        return (left.account.usageWindowUsed ?? 0) - (right.account.usageWindowUsed ?? 0)
       }
       return left.account.createdAt - right.account.createdAt
     })
@@ -268,42 +433,219 @@ export class ProviderRoutingEngine {
     return [...sorted.slice(offset), ...sorted.slice(0, offset)]
   }
 
-  private tryReserve(accountId: string): boolean {
-    const active = this.activeByAccount.get(accountId) ?? 0
-    if (active >= this.runtimeConfig.accountConcurrency) return false
-    this.activeByAccount.set(accountId, active + 1)
-    return true
+  private async reserveCandidate(
+    request: ChatCompletionRequest,
+    candidates: AccountSelection[],
+    context: ProxyContext,
+  ): Promise<ReservedSelection | RoutingFailure | undefined> {
+    if (
+      context.priority === 'background'
+      && (
+        this.runtimeConfig.backgroundAccountReserve > 0
+        || this.runtimeConfig.backgroundUsageReserve > 0
+      )
+    ) {
+      return this.reserveBackgroundCandidate(candidates)
+    }
+
+    for (const selection of candidates) {
+      const release = this.gateFor(selection.account.id).tryAcquire()
+      if (!release) continue
+      const reserved = this.consumeUsageWindow(selection, release)
+      if (reserved) return reserved
+    }
+
+    const target = [...candidates].sort((left, right) => (
+      this.gateFor(left.account.id).getQueued()
+      - this.gateFor(right.account.id).getQueued()
+    ))[0]
+    if (!target) return undefined
+
+    const release = await this.gateFor(target.account.id).acquire({
+      priority: context.priority,
+      signal: context.signal,
+      timeoutMs: this.runtimeConfig.queueTimeoutMs,
+    })
+    if (!release) return undefined
+
+    const stillEligible = this.getCandidates(request)
+      .some((selection) => selection.account.id === target.account.id)
+    if (!stillEligible) {
+      release()
+      return undefined
+    }
+    return this.consumeUsageWindow(target, release)
   }
 
-  private releaseAccount(accountId: string): void {
-    const active = this.activeByAccount.get(accountId) ?? 0
-    if (active <= 1) this.activeByAccount.delete(accountId)
-    else this.activeByAccount.set(accountId, active - 1)
+  private reserveBackgroundCandidate(
+    candidates: AccountSelection[],
+  ): ReservedSelection | RoutingFailure {
+    const backgroundCandidates = candidates.filter((selection) => {
+      const usageLimit = Number(selection.account.dailyLimit) || 0
+      if (usageLimit <= 0) return true
+      return (selection.account.usageWindowUsed ?? 0)
+        < usageLimit - this.runtimeConfig.backgroundUsageReserve
+    })
+    if (backgroundCandidates.length === 0) {
+      return {
+        status: 503,
+        code: 'background_usage_capacity_reserved',
+        retryAfterSeconds: this.nextUsageRetrySeconds(candidates),
+      }
+    }
+
+    const idleAccounts = candidates.filter(
+      (selection) => this.gateFor(selection.account.id).getActive() === 0,
+    ).length
+    const available = backgroundCandidates
+      .filter((selection) => (
+        this.gateFor(selection.account.id).getActive()
+        < this.runtimeConfig.accountConcurrency
+      ))
+      // Reuse spare capacity before consuming a completely idle account.
+      .sort((left, right) => (
+        Number(this.gateFor(left.account.id).getActive() === 0)
+        - Number(this.gateFor(right.account.id).getActive() === 0)
+      ))
+
+    for (const selection of available) {
+      const gate = this.gateFor(selection.account.id)
+      const consumesIdleAccount = gate.getActive() === 0
+      if (
+        consumesIdleAccount
+        && idleAccounts <= this.runtimeConfig.backgroundAccountReserve
+      ) {
+        continue
+      }
+      const release = gate.tryAcquire()
+      if (!release) continue
+      const reserved = this.consumeUsageWindow(selection, release)
+      if (reserved) return reserved
+    }
+
+    return {
+      status: 503,
+      code: 'background_capacity_reserved',
+      retryAfterSeconds: 30,
+    }
+  }
+
+  private gateFor(accountId: string): ConcurrencyGate {
+    const existing = this.accountGates.get(accountId)
+    if (existing) return existing
+    const gate = new ConcurrencyGate(
+      this.runtimeConfig.accountConcurrency,
+      this.runtimeConfig.queueMaxDepth,
+    )
+    this.accountGates.set(accountId, gate)
+    return gate
+  }
+
+  private consumeUsageWindow(
+    selection: AccountSelection,
+    release: () => void,
+  ): ReservedSelection | undefined {
+    const usage = this.store.consumeAccountUsageWindow(
+      selection.account.id,
+      selection.account.dailyLimit,
+      this.runtimeConfig.accountUsageWindowMs,
+    )
+    if (!usage.allowed) {
+      release()
+      return undefined
+    }
+    return {
+      selection: {
+        ...selection,
+        account: {
+          ...selection.account,
+          usageWindowUsed: usage.used,
+          usageWindowResetAt: usage.resetAt,
+        },
+      },
+      release,
+    }
+  }
+
+  private nextUsageRetrySeconds(candidates: AccountSelection[]): number {
+    const now = Date.now()
+    const retryAt = candidates
+      .map((selection) => selection.account.usageWindowResetAt)
+      .filter((value): value is number => typeof value === 'number' && value > now)
+      .sort((left, right) => left - right)[0]
+    return Math.max(
+      1,
+      Math.ceil(((retryAt ?? now + this.runtimeConfig.accountUsageWindowMs) - now) / 1000),
+    )
   }
 
   private recordSuccess(accountId: string): void {
     this.circuits.delete(accountId)
   }
 
+  private handleAccountFailure(
+    selection: AccountSelection,
+    failure: AccountFailureOutcome,
+  ): CircuitState {
+    const circuit = this.recordFailure(
+      selection.account.id,
+      failure.status,
+      failure.retryAfterMs,
+      failure.code,
+    )
+    if (failure.code === 'provider_account_suspended') {
+      const retryAt = failure.retryAfterMs === undefined
+        ? undefined
+        : Date.now() + failure.retryAfterMs
+      const message = 'The DeepSeek account is temporarily suspended by the provider.'
+      this.store.updateAccount(selection.account.id, {
+        status: 'error',
+        errorMessage: message,
+      })
+      this.hooks.onAccountSuspended?.({
+        accountId: selection.account.id,
+        message,
+        retryAt,
+        latencyMs: failure.latencyMs,
+      })
+    } else if (failure.code === 'provider_authentication_failed') {
+      this.store.updateAccount(selection.account.id, {
+        status: 'error',
+        errorMessage: 'Provider authentication requires attention.',
+      })
+    }
+    return circuit
+  }
+
   private recordFailure(
     accountId: string,
     status: number,
     retryAfterMs?: number,
+    code?: string,
   ): CircuitState {
     const previous = this.circuits.get(accountId) ?? { failures: 0, openedUntil: 0 }
     const failures = previous.failures + 1
-    const shouldOpen = status === 429 || failures >= 3
-    const baseCooldown = status === 429
-      ? Math.min(15 * 60_000, Math.max(1000, retryAfterMs ?? 60_000))
+    const suspended = code === 'provider_account_suspended'
+    const expertBusy = code === 'provider_expert_busy'
+    const shouldOpen = suspended || expertBusy || status === 429 || failures >= 3
+    const baseCooldown = suspended
+      ? Math.min(24 * 60 * 60_000, Math.max(1000, retryAfterMs ?? 15 * 60_000))
+      : expertBusy
+        ? Math.min(5 * 60_000, Math.max(1000, retryAfterMs ?? 30_000))
+      : status === 429
+        ? Math.min(15 * 60_000, Math.max(1000, retryAfterMs ?? 60_000))
       : Math.min(10 * 60_000, 15_000 * 2 ** Math.max(0, failures - 3))
-    const jitter = shouldOpen
+    const jitter = shouldOpen && !suspended
       ? Math.floor(baseCooldown * this.deterministicJitterRatio(accountId))
       : 0
     const state = {
       failures,
       openedUntil: shouldOpen
-        ? Date.now() + Math.min(15 * 60_000, baseCooldown + jitter)
+        ? Date.now() + (suspended
+            ? baseCooldown
+            : Math.min(15 * 60_000, baseCooldown + jitter))
         : 0,
+      code,
     }
     this.circuits.set(accountId, state)
     return state

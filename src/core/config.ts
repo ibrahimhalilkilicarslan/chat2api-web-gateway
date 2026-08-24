@@ -34,15 +34,33 @@ const environmentSchema = z.object({
   CHAT2API_SESSION_SECRET: z.string().min(32).max(512),
   CHAT2API_ADMIN_ORIGINS: z.string().min(1),
   CHAT2API_ADMIN_HOSTS: z.string().optional(),
-  CHAT2API_MAX_BODY_BYTES: z.coerce.number().int().min(1024).max(10 * 1024 * 1024).default(2 * 1024 * 1024),
+  CHAT2API_MAX_BODY_BYTES: z.coerce.number().int().min(1024).max(32 * 1024 * 1024).default(20 * 1024 * 1024),
   CHAT2API_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(1000).default(20),
-  CHAT2API_ACCOUNT_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(2),
+  CHAT2API_ACCOUNT_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(1),
+  CHAT2API_BACKGROUND_ACCOUNT_RESERVE: z.coerce.number().int().min(0).max(100).default(1),
+  CHAT2API_BACKGROUND_USAGE_RESERVE: z.coerce.number().int().min(0).max(100_000).optional(),
+  CHAT2API_BACKGROUND_DAILY_RESERVE: z.coerce.number().int().min(0).max(100_000).optional(),
+  CHAT2API_ACCOUNT_USAGE_WINDOW_MS: z.coerce.number().int().min(60_000).max(24 * 60 * 60_000).default(15 * 60_000),
+  CHAT2API_QUEUE_MAX_DEPTH: z.coerce.number().int().min(1).max(10_000).default(100),
+  CHAT2API_QUEUE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(5 * 60_000).default(60_000),
+  CHAT2API_DEEPSEEK_SESSION_TTL_MS: z.coerce.number().int().min(0).max(60 * 60_000).default(5 * 60_000),
   CHAT2API_RATE_LIMIT_RPM: z.coerce.number().int().min(1).max(100_000).default(60),
   CHAT2API_DAILY_QUOTA: z.coerce.number().int().min(1).max(10_000_000).default(1000),
   CHAT2API_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(15 * 60_000).default(120_000),
   CHAT2API_FIRST_BYTE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(5 * 60_000).default(30_000),
   CHAT2API_STREAM_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(5 * 60_000).default(90_000),
-  CHAT2API_ACCOUNT_HEALTH_INTERVAL_MS: z.coerce.number().int().min(0).max(24 * 60 * 60_000).default(15 * 60_000),
+  CHAT2API_ACCOUNT_HEALTH_INTERVAL_MS: z.coerce.number().int().min(0).max(24 * 60 * 60_000).default(60 * 60_000),
+  CHAT2API_ALERT_WEBHOOK_URL: z
+    .string()
+    .url()
+    .refine((value) => {
+      try {
+        return ['http:', 'https:'].includes(new URL(value).protocol)
+      } catch {
+        return false
+      }
+    }, 'CHAT2API_ALERT_WEBHOOK_URL must be an http(s) URL')
+    .optional(),
 })
 
 export interface RuntimeConfig {
@@ -62,12 +80,19 @@ export interface RuntimeConfig {
   maxBodyBytes: number
   globalConcurrency: number
   accountConcurrency: number
+  backgroundAccountReserve: number
+  backgroundUsageReserve: number
+  accountUsageWindowMs: number
+  queueMaxDepth: number
+  queueTimeoutMs: number
+  deepSeekSessionTtlMs: number
   rateLimitRpm: number
   dailyQuota: number
   requestTimeoutMs: number
   firstByteTimeoutMs: number
   streamIdleTimeoutMs: number
   accountHealthIntervalMs: number
+  alertWebhookUrl?: string
 }
 
 function parseMasterKey(value: string): Buffer {
@@ -147,11 +172,20 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     maxBodyBytes: parsed.data.CHAT2API_MAX_BODY_BYTES,
     globalConcurrency: parsed.data.CHAT2API_GLOBAL_CONCURRENCY,
     accountConcurrency: parsed.data.CHAT2API_ACCOUNT_CONCURRENCY,
+    backgroundAccountReserve: parsed.data.CHAT2API_BACKGROUND_ACCOUNT_RESERVE,
+    backgroundUsageReserve: parsed.data.CHAT2API_BACKGROUND_USAGE_RESERVE
+      ?? parsed.data.CHAT2API_BACKGROUND_DAILY_RESERVE
+      ?? 10,
+    accountUsageWindowMs: parsed.data.CHAT2API_ACCOUNT_USAGE_WINDOW_MS,
+    queueMaxDepth: parsed.data.CHAT2API_QUEUE_MAX_DEPTH,
+    queueTimeoutMs: parsed.data.CHAT2API_QUEUE_TIMEOUT_MS,
+    deepSeekSessionTtlMs: parsed.data.CHAT2API_DEEPSEEK_SESSION_TTL_MS,
     rateLimitRpm: parsed.data.CHAT2API_RATE_LIMIT_RPM,
     dailyQuota: parsed.data.CHAT2API_DAILY_QUOTA,
     requestTimeoutMs: parsed.data.CHAT2API_REQUEST_TIMEOUT_MS,
     firstByteTimeoutMs: parsed.data.CHAT2API_FIRST_BYTE_TIMEOUT_MS,
     streamIdleTimeoutMs: parsed.data.CHAT2API_STREAM_IDLE_TIMEOUT_MS,
     accountHealthIntervalMs: parsed.data.CHAT2API_ACCOUNT_HEALTH_INTERVAL_MS,
+    alertWebhookUrl: parsed.data.CHAT2API_ALERT_WEBHOOK_URL,
   }
 }

@@ -79,10 +79,14 @@ export interface Account {
   errorMessage?: string
   /** Request count */
   requestCount?: number
-  /** Daily request limit */
+  /** Rolling account-usage limit. The legacy API name is retained for compatibility. */
   dailyLimit?: number
   /** Today used count */
   todayUsed?: number
+  /** Attempts observed in the active account-usage window. */
+  usageWindowUsed?: number
+  /** Epoch time when the next usage slot becomes available. */
+  usageWindowResetAt?: number
 }
 
 /**
@@ -196,7 +200,7 @@ export const DEFAULT_STATISTICS: PersistentStatistics = {
  * Default Application Configuration
  */
 export const DEFAULT_CONFIG: AppConfig = {
-  loadBalanceStrategy: 'round-robin',
+  loadBalanceStrategy: 'least-used',
   requestLogMaxEntries: 200,
 }
 

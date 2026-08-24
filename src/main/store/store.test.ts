@@ -18,6 +18,10 @@ describe('encrypted gateway store', () => {
 
   afterEach(() => store.close())
 
+  it('defaults new installations to least-used account routing', () => {
+    expect(store.getConfig().loadBalanceStrategy).toBe('least-used')
+  })
+
   it('exposes only the enabled DeepSeek web provider and masks credentials by default', () => {
     expect(store.getProviders()).toHaveLength(1)
     expect(store.getProviders()[0]).toMatchObject({
@@ -79,6 +83,50 @@ describe('encrypted gateway store', () => {
     expect(store.consumeApiKeyDailyQuota(matched!).allowed).toBe(true)
     expect(store.consumeApiKeyDailyQuota(matched!).allowed).toBe(true)
     expect(store.consumeApiKeyDailyQuota(matched!).allowed).toBe(false)
+  })
+
+  it('restores account capacity gradually within a persistent rolling window', () => {
+    const accountId = randomUUID()
+    store.addAccount({
+      id: accountId,
+      providerId: 'deepseek',
+      name: 'Windowed account',
+      credentials: { token: 'windowed-secret' },
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    const windowMs = 15 * 60_000
+    const firstAt = 1_000_000
+
+    expect(store.consumeAccountUsageWindow(accountId, 2, windowMs, firstAt)).toMatchObject({
+      allowed: true,
+      used: 1,
+      remaining: 1,
+      resetAt: firstAt + windowMs,
+    })
+    expect(store.consumeAccountUsageWindow(accountId, 2, windowMs, firstAt + 1000)).toMatchObject({
+      allowed: true,
+      used: 2,
+      remaining: 0,
+    })
+    expect(store.consumeAccountUsageWindow(accountId, 2, windowMs, firstAt + 2000)).toMatchObject({
+      allowed: false,
+      used: 2,
+      remaining: 0,
+      resetAt: firstAt + windowMs,
+    })
+
+    expect(store.getAccountUsageWindow(accountId, windowMs, firstAt + windowMs + 1)).toMatchObject({
+      allowed: true,
+      used: 1,
+      resetAt: firstAt + 1000 + windowMs,
+    })
+    expect(store.consumeAccountUsageWindow(accountId, 2, windowMs, firstAt + windowMs + 1)).toMatchObject({
+      allowed: true,
+      used: 2,
+      remaining: 0,
+    })
   })
 
   it('rotates the environment-managed bootstrap key and preserves admin keys', () => {
@@ -170,7 +218,7 @@ describe('encrypted gateway store', () => {
     })
     expect(store.getMaintenanceStatus()).toMatchObject({
       integrity: 'ok',
-      schemaVersion: 2,
+      schemaVersion: 3,
     })
   })
 

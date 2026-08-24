@@ -9,7 +9,13 @@ const allowedLicenses = new Set([
   'BlueOak-1.0.0',
 ])
 
-const result = spawnSync('pnpm', ['licenses', 'list', '--prod', '--json'], {
+const pnpmCli = process.env.npm_execpath
+const command = pnpmCli ? process.execPath : 'pnpm'
+const args = pnpmCli
+  ? [pnpmCli, 'licenses', 'list', '--prod', '--json']
+  : ['licenses', 'list', '--prod', '--json']
+
+const result = spawnSync(command, args, {
   encoding: 'utf8',
   maxBuffer: 16 * 1024 * 1024,
   stdio: ['ignore', 'pipe', 'pipe'],

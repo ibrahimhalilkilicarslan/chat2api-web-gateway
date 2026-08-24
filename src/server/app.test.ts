@@ -25,6 +25,9 @@ const accountHealthChecker: AccountHealthChecker = async (_provider, account) =>
         message: 'Test provider credential is valid.',
         checkedAt: Date.now(),
         latencyMs: 4,
+        identityFingerprint: account.credentials.token?.startsWith('duplicate-provider-identity-')
+          ? 'duplicate-provider-identity'
+          : account.credentials.token,
       }
 )
 
@@ -45,6 +48,12 @@ const config: RuntimeConfig = {
   maxBodyBytes: 2 * 1024 * 1024,
   globalConcurrency: 5,
   accountConcurrency: 1,
+  backgroundAccountReserve: 1,
+  backgroundUsageReserve: 10,
+  accountUsageWindowMs: 15 * 60_000,
+  queueMaxDepth: 10,
+  queueTimeoutMs: 1000,
+  deepSeekSessionTtlMs: 300_000,
   rateLimitRpm: 20,
   dailyQuota: 100,
   requestTimeoutMs: 10_000,
@@ -99,14 +108,14 @@ describe('gateway HTTP security contract', () => {
     expect(valid.statusCode).toBe(200)
   })
 
-  it('exposes only the documented text-chat compatibility surface', async () => {
+  it('rejects the legacy completions surface but accepts standard OpenAI chat fields', async () => {
     const legacy = await app.inject({
       method: 'POST',
       url: '/v1/completions',
       headers: { authorization: `Bearer ${bootstrapApiKey}` },
       payload: { model: 'deepseek-v4-flash', prompt: 'legacy' },
     })
-    const unsupported = await app.inject({
+    const compat = await app.inject({
       method: 'POST',
       url: '/v1/chat/completions',
       headers: { authorization: `Bearer ${bootstrapApiKey}` },
@@ -114,16 +123,18 @@ describe('gateway HTTP security contract', () => {
         model: 'deepseek-v4-flash',
         messages: [{ role: 'user', content: 'hello' }],
         tools: [],
+        temperature: 0.5,
+        max_tokens: 64,
+        response_format: { type: 'json_object' },
       },
     })
 
     expect(legacy.statusCode).toBe(404)
-    expect(unsupported.statusCode).toBe(400)
-    expect(unsupported.json()).toMatchObject({
-      error: {
-        code: 'unsupported_feature',
-      },
-    })
+    // Standard OpenAI fields are accepted for drop-in compatibility, never
+    // rejected as unsupported. Without a live account the request fails later
+    // at routing, not at validation.
+    expect(compat.statusCode).not.toBe(400)
+    expect(compat.json()?.error?.code).not.toBe('unsupported_feature')
   })
 
   it('requires an exact admin origin and issues a signed session', async () => {
@@ -259,6 +270,72 @@ describe('gateway HTTP security contract', () => {
     expect(JSON.stringify(listed.json())).not.toContain('rotated-provider-token-that-must-remain-private')
   })
 
+  it('preserves omitted account fields during partial updates', async () => {
+    const accountId = '6d4c41c6-3be2-42c8-a802-e0c6c02efed4'
+    const now = Date.now()
+    storeManager.addAccount({
+      id: accountId,
+      providerId: 'deepseek',
+      name: 'Partial update account',
+      email: 'partial-update@example.com',
+      credentials: { token: 'partial-update-provider-token' },
+      status: 'active',
+      dailyLimit: 50,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    const disabled = await app.inject({
+      method: 'PATCH',
+      url: `/admin/api/accounts/${accountId}`,
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: { status: 'inactive' },
+    })
+
+    expect(disabled.statusCode).toBe(200)
+    expect(disabled.json()).toMatchObject({
+      name: 'Partial update account',
+      email: 'partial-update@example.com',
+      status: 'inactive',
+      dailyLimit: 50,
+    })
+    expect(storeManager.getAccountById(accountId, true)).toMatchObject({
+      email: 'partial-update@example.com',
+      dailyLimit: 50,
+      credentials: { token: 'partial-update-provider-token' },
+    })
+  })
+
+  it('rejects a second credential for an already registered provider identity', async () => {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/admin/api/accounts',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        providerId: 'deepseek',
+        name: 'First identity record',
+        credentials: { token: 'duplicate-provider-identity-first-session' },
+      },
+    })
+    const duplicate = await app.inject({
+      method: 'POST',
+      url: '/admin/api/accounts',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        providerId: 'deepseek',
+        name: 'Duplicate identity record',
+        credentials: { token: 'duplicate-provider-identity-second-session' },
+      },
+    })
+
+    expect(first.statusCode).toBe(201)
+    expect(duplicate.statusCode).toBe(409)
+    expect(duplicate.json()).toMatchObject({
+      error: { code: 'duplicate_provider_identity' },
+    })
+    expect(JSON.stringify(duplicate.json())).not.toContain('second-session')
+  })
+
   it('returns a generated API key once and stores only its hash', async () => {
     const created = await app.inject({
       method: 'POST',
@@ -284,6 +361,44 @@ describe('gateway HTTP security contract', () => {
     const serialized = JSON.stringify(listed.json())
     expect(serialized).not.toContain(body.rawKey)
     expect(serialized).not.toContain('keyHash')
+  })
+
+  it('keeps model discovery outside chat burst and daily quotas', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/admin/api/api-keys',
+      headers: { origin, cookie: cookies, 'x-csrf-token': csrfToken },
+      payload: {
+        name: 'Quota isolation client',
+        scopes: ['chat', 'models'],
+        modelAllowlist: [],
+        requestsPerMinute: 2,
+        dailyQuota: 1,
+      },
+    })
+    const { rawKey } = created.json<{ rawKey: string }>()
+    const headers = { authorization: `Bearer ${rawKey}` }
+
+    const firstModels = await app.inject({ method: 'GET', url: '/v1/models', headers })
+    const secondModels = await app.inject({ method: 'GET', url: '/v1/models', headers })
+    const firstChat = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers,
+      payload: { invalid: true },
+    })
+    const secondChat = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers,
+      payload: { invalid: true },
+    })
+
+    expect(firstModels.statusCode).toBe(200)
+    expect(secondModels.statusCode).toBe(200)
+    expect(firstChat.statusCode).toBe(400)
+    expect(secondChat.statusCode).toBe(429)
+    expect(secondChat.json()).toMatchObject({ error: { code: 'daily_quota_exceeded' } })
   })
 
   it('enforces API key IP policy, expiry and zero-grace rotation', async () => {
@@ -364,7 +479,7 @@ describe('gateway HTTP security contract', () => {
     expect(maintenance.statusCode).toBe(200)
     expect(maintenance.json()).toMatchObject({
       integrity: 'ok',
-      schemaVersion: 2,
+      schemaVersion: 3,
       journalMode: 'memory',
     })
     expect(JSON.stringify(maintenance.json())).not.toContain('databasePath')
